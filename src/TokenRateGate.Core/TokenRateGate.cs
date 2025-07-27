@@ -90,7 +90,12 @@ public class TokenRateGate
             // Try immediate reservation, the fast path
             if (TryReserveImmediately(totalEstimatedTokens, out var immediateId))
             {
-                // TODO: Continue implementing
+                _logger.LogDebug("Immediate reservation: {TotalTokens} tokens (input: {InputTokens}, estimated output: {EstimatedOutput} with ID {ReservationID}",
+                    totalEstimatedTokens, inputTokens, totalEstimatedTokens - inputTokens, immediateId);
+                
+                UpdateSafetyTimerState();
+
+                return new TokenReservation(immediateId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
             }
         }
         catch
@@ -124,9 +129,19 @@ public class TokenRateGate
     private bool TryReserveImmediatelyInternal(int requiredTokens, out Guid immediateId)
     {
         CleanupExpiredRecords();
+
+        if (HasCapacityInternal(requiredTokens))
+        {
+            immediateId =  Guid.NewGuid();
+            var reservation = new PendingReservations(immediateId, requiredTokens, DateTime.UtcNow);
+            _activeReservations[immediateId] = reservation;
+            
+            _requestTimeline.Enqueue((DateTime.UtcNow));
+
+            return true;
+        }
         
-        // TODO: Continue implementing
-        immediateId = Guid.Empty; 
+        immediateId = Guid.Empty;
         return false;
     }
 
@@ -314,6 +329,66 @@ public class TokenRateGate
         }
     }
 
+    private bool HasCapacityInternal(int requiredTokens)
+    {
+        int currentUsage = GetCurrentUsageInternal();
+        int effectiveLimit = _options.TokenLimit - _options.SafetyBuffer;
+        
+        bool hasTokenCapacity = currentUsage + requiredTokens <= effectiveLimit;
+        bool hasRequestCapacity = GetCurrentRequestCount() < _options.MaxRequestsPerMinute;
+        
+        return hasTokenCapacity && hasRequestCapacity;
+    }
+
+    private async Task ReleaseReservationAsync(TokenReservation reservation)
+    {
+        if (_disposed) return;
+
+        bool reservationFound = false;
+        bool shouldProcessQueue = false;
+
+        try
+        {
+            lock (_lock)
+            {
+                if (_activeReservations.Remove(reservation.Id))
+                {
+                    reservationFound = true;
+                    shouldProcessQueue = _waitingRequests.Count > 0;
+
+                    if (reservation.ActualTokensUsed.HasValue)
+                    {
+                        var now =  DateTime.UtcNow;
+                        _usageTimeline.Enqueue(new TokenUsageEntry(now, reservation.ActualTokensUsed.Value));
+                        _currentActualUsage += reservation.ActualTokensUsed.Value;
+
+                        var efficiency = reservation.ReservedTokens > 0
+                            ? (double)reservation.ActualTokensUsed.Value / reservation.ReservedTokens * 100
+                            : 100;
+                        
+                        _logger.LogDebug("Released reservation {ReservationId}: {Reserved} -> {Actual} tokens ({Efficiency:F1}% efficiency), active reservations: {ActiveCount}", 
+                                reservation.Id, reservation.ReservedTokens, reservation.ActualTokensUsed.Value, efficiency, _activeReservations.Count);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("Released failed reservation {ReservationId}: {Reserved} tokens (no usage recorded), active reservations: {ActiveCount}", 
+                            reservation.Id, reservation.ReservedTokens, _activeReservations.Count);
+                    }
+                    
+                    UpdateSafetyTimerState();
+                }
+            }
+        }
+        finally
+        {
+            if (reservationFound)
+                _concurrencyLimiter.Release();
+        }
+        
+        if (shouldProcessQueue)
+            TryProcessingWaitingRequests();
+    }
+
     // ============================================================================
     // MONITORING METHODS
     // ============================================================================
@@ -343,6 +418,12 @@ public class TokenRateGate
     private int GetReservedTokensInternal()
     {
         return _activeReservations.Values.Sum(r => r.EstimatedTokens);
+    }
+
+    private int GetCurrentRequestCount()
+    {
+        var cutoff = DateTime.UtcNow.AddSeconds(_options.WindowSeconds);
+        return _requestTimeline.Count(t => t >= cutoff);
     }
 
     // ============================================================================
