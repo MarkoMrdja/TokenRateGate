@@ -38,7 +38,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private readonly SemaphoreSlim _concurrencyLimiter;
 
     private readonly Timer _safetyTimer;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     private DateTime _lastCleanup = DateTime.MinValue;
     private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(3); // TODO: Consider making this configurable
@@ -85,11 +85,22 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         
         if (estimatedOutputTokens < 0)
             throw new ArgumentException("Estimated output tokens cannot be negative", nameof(estimatedOutputTokens));
-        
+
         int totalEstimatedTokens = CalculateEstimatedTotalTokens(inputTokens, estimatedOutputTokens);
+
+        // Validate that the request is possible given the token limit and safety buffer
+        int effectiveLimit = _options.TokenLimit - _options.SafetyBuffer;
+        if (totalEstimatedTokens > effectiveLimit)
+        {
+            throw new ArgumentException(
+                $"Requested tokens ({totalEstimatedTokens:N0}) exceeds effective capacity ({effectiveLimit:N0}). " +
+                $"Token limit: {_options.TokenLimit:N0}, Safety buffer: {_options.SafetyBuffer:N0}. " +
+                $"This request can never be fulfilled.", nameof(inputTokens));
+        }
         
         await _concurrencyLimiter.WaitAsync(cancellationToken);
 
+        bool semaphoreAcquired = true;
         try
         {
             // Try immediate reservation, the fast path
@@ -97,14 +108,19 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             {
                 _logger.LogDebug("Immediate reservation: {TotalTokens} tokens (input: {InputTokens}, estimated output: {EstimatedOutput} with ID {ReservationID}",
                     totalEstimatedTokens, inputTokens, totalEstimatedTokens - inputTokens, immediateId);
-                
-                UpdateSafetyTimerState();
+
+                // UpdateSafetyTimerState is already called inside TryReserveImmediately under lock
+
+                // Release semaphore immediately after successful reservation
+                _concurrencyLimiter.Release();
+                semaphoreAcquired = false;
 
                 return new TokenReservation(immediateId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
             }
 
             var waitingRequest = new WaitingRequest(totalEstimatedTokens, cancellationToken);
             LinkedListNode<WaitingRequest> node;
+            CancellationTokenRegistration cancellationRegistration = default;
 
             lock (_lock)
             {
@@ -112,8 +128,13 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 {
                     _logger.LogDebug("Double-check reservation: {TotalTokens} tokens with ID {ReservationId}",
                         totalEstimatedTokens, doubleCheckId);
-                    
+
                     UpdateSafetyTimerState();
+
+                    // Release semaphore immediately after successful reservation
+                    _concurrencyLimiter.Release();
+                    semaphoreAcquired = false;
+
                     return new TokenReservation(doubleCheckId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
                 }
 
@@ -122,7 +143,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
                 int currentUsage = GetCurrentUsageInternal();
                 int reservedTokens = GetReservedTokensInternal();
-                
+
                 _logger.LogInformation("Added to waiting queue: {TotalTokens} tokens (input: {InputTokens}, estimated output: {EstimatedOutput}). " +
                    "Queue length: {QueueLength}, Current usage: {CurrentUsage}/{TokenLimit} ({UsagePercent:F1}%), " +
                    "Reserved: {ReservedTokens}, Available: {AvailableTokens}",
@@ -130,25 +151,26 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     currentUsage, _options.TokenLimit, (double)currentUsage / _options.TokenLimit * 100,
                     reservedTokens, Math.Max(0, _options.TokenLimit - _options.SafetyBuffer - currentUsage));
 
+                // Register cancellation callback INSIDE the lock to avoid race condition
+                cancellationRegistration = cancellationToken.Register(() =>
+                {
+                    lock (_lock)
+                    {
+                        if (waitingRequest.Node != null)
+                        {
+                            _waitingRequests.Remove(waitingRequest.Node);
+                            waitingRequest.Node = null;
+                            waitingRequest.TaskCompletionSource.TrySetCanceled();
+
+                            _logger.LogDebug("Cancelled waiting request: {TotalTokens} tokens", totalEstimatedTokens);
+
+                            UpdateSafetyTimerState();
+                        }
+                    }
+                });
+
                 UpdateSafetyTimerState();
             }
-
-            var cancellationRegistration = cancellationToken.Register(() =>
-            {
-                lock (_lock)
-                {
-                    if (waitingRequest.Node != null)
-                    {
-                        _waitingRequests.Remove(waitingRequest.Node);
-                        waitingRequest.Node = null;
-                        waitingRequest.TaskCompletionSource.TrySetCanceled();
-                        
-                        _logger.LogDebug("Cancelled waiting request: {TotalTokens} tokens", totalEstimatedTokens);
-                        
-                        UpdateSafetyTimerState();
-                    }
-                }
-            });
 
             var startTime = DateTime.UtcNow;
             var maxWaitTime = _options.MaxWaitTime;
@@ -168,6 +190,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     "Granted queued reservation: {TotalTokens} tokens with ID {ReservationId} after waiting {WaitTime:mm\\:ss}",
                     totalEstimatedTokens, reservationId, waitTime);
 
+                // Release semaphore after successfully getting reservation from queue
+                _concurrencyLimiter.Release();
+                semaphoreAcquired = false;
+
                 return new TokenReservation(reservationId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
             }
             catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested &&
@@ -185,29 +211,55 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         }
         catch
         {
-            _concurrencyLimiter.Release();
+            if (semaphoreAcquired)
+                _concurrencyLimiter.Release();
             throw;
         }
     }
 
     private int CalculateEstimatedTotalTokens(int inputTokens, int estimatedOutputTokens)
     {
-        if (estimatedOutputTokens > 0)
-            return inputTokens + estimatedOutputTokens;
+        long total;
 
-        if (_options.OutputEstimationStrategy == OutputEstimationStrategy.FixedMultiplier)
-            return inputTokens + (int)Math.Ceiling(inputTokens * _options.OutputMultiplier);
+        if (estimatedOutputTokens > 0)
+        {
+            total = (long)inputTokens + estimatedOutputTokens;
+        }
+        else if (_options.OutputEstimationStrategy == OutputEstimationStrategy.FixedMultiplier)
+        {
+            long estimatedOutput = (long)Math.Ceiling(inputTokens * _options.OutputMultiplier);
+            total = inputTokens + estimatedOutput;
+        }
         else if (_options.OutputEstimationStrategy == OutputEstimationStrategy.FixedAmount)
-            return inputTokens + _options.DefaultOutputTokens;
+        {
+            total = (long)inputTokens + _options.DefaultOutputTokens;
+        }
         else
-            return inputTokens * 2;
+        {
+            total = (long)inputTokens * 2;
+        }
+
+        // Check for overflow and ensure result fits in int
+        if (total > int.MaxValue)
+        {
+            throw new ArgumentException(
+                $"Calculated total tokens ({total:N0}) exceeds maximum allowed value ({int.MaxValue:N0}). " +
+                $"Input tokens: {inputTokens:N0}, Estimated output: {(total - inputTokens):N0}");
+        }
+
+        return (int)total;
     }
 
     private bool TryReserveImmediately(int requiredTokens, out Guid immediateId)
     {
         lock (_lock)
         {
-            return TryReserveImmediatelyInternal(requiredTokens, out immediateId);
+            bool success = TryReserveImmediatelyInternal(requiredTokens, out immediateId);
+            if (success)
+            {
+                UpdateSafetyTimerState();
+            }
+            return success;
         }
     }
 
@@ -220,12 +272,12 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             immediateId =  Guid.NewGuid();
             var reservation = new PendingReservations(immediateId, requiredTokens, DateTime.UtcNow);
             _activeReservations[immediateId] = reservation;
-            
+
             _requestTimeline.Enqueue((DateTime.UtcNow));
 
             return true;
         }
-        
+
         immediateId = Guid.Empty;
         return false;
     }
@@ -429,47 +481,37 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     {
         if (_disposed) return Task.CompletedTask;
 
-        bool reservationFound = false;
         bool shouldProcessQueue = false;
 
-        try
+        lock (_lock)
         {
-            lock (_lock)
+            if (_activeReservations.Remove(reservation.Id))
             {
-                if (_activeReservations.Remove(reservation.Id))
+                shouldProcessQueue = _waitingRequests.Count > 0;
+
+                if (reservation.ActualTokensUsed.HasValue)
                 {
-                    reservationFound = true;
-                    shouldProcessQueue = _waitingRequests.Count > 0;
+                    var now =  DateTime.UtcNow;
+                    _usageTimeline.Enqueue(new TokenUsageEntry(now, reservation.ActualTokensUsed.Value));
+                    _currentActualUsage += reservation.ActualTokensUsed.Value;
 
-                    if (reservation.ActualTokensUsed.HasValue)
-                    {
-                        var now =  DateTime.UtcNow;
-                        _usageTimeline.Enqueue(new TokenUsageEntry(now, reservation.ActualTokensUsed.Value));
-                        _currentActualUsage += reservation.ActualTokensUsed.Value;
+                    var efficiency = reservation.ReservedTokens > 0
+                        ? (double)reservation.ActualTokensUsed.Value / reservation.ReservedTokens * 100
+                        : 100;
 
-                        var efficiency = reservation.ReservedTokens > 0
-                            ? (double)reservation.ActualTokensUsed.Value / reservation.ReservedTokens * 100
-                            : 100;
-                        
-                        _logger.LogDebug("Released reservation {ReservationId}: {Reserved} -> {Actual} tokens ({Efficiency:F1}% efficiency), active reservations: {ActiveCount}", 
-                                reservation.Id, reservation.ReservedTokens, reservation.ActualTokensUsed.Value, efficiency, _activeReservations.Count);
-                    }
-                    else
-                    {
-                        _logger.LogDebug("Released failed reservation {ReservationId}: {Reserved} tokens (no usage recorded), active reservations: {ActiveCount}", 
-                            reservation.Id, reservation.ReservedTokens, _activeReservations.Count);
-                    }
-                    
-                    UpdateSafetyTimerState();
+                    _logger.LogDebug("Released reservation {ReservationId}: {Reserved} -> {Actual} tokens ({Efficiency:F1}% efficiency), active reservations: {ActiveCount}",
+                            reservation.Id, reservation.ReservedTokens, reservation.ActualTokensUsed.Value, efficiency, _activeReservations.Count);
                 }
+                else
+                {
+                    _logger.LogDebug("Released failed reservation {ReservationId}: {Reserved} tokens (no usage recorded), active reservations: {ActiveCount}",
+                        reservation.Id, reservation.ReservedTokens, _activeReservations.Count);
+                }
+
+                UpdateSafetyTimerState();
             }
         }
-        finally
-        {
-            if (reservationFound)
-                _concurrencyLimiter.Release();
-        }
-        
+
         if (shouldProcessQueue)
             TryProcessingWaitingRequests();
 
@@ -528,8 +570,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private int GetCurrentRequestCount()
     {
-        var cutoff = DateTime.UtcNow.AddSeconds(-_options.RequestWindowSeconds);
-        return _requestTimeline.Count(timestamp => timestamp >= cutoff);
+        // Since CleanupRequestTimeline removes old entries regularly (every 3 seconds),
+        // we can use the direct count for performance. This is O(1) instead of O(n).
+        // The cleanup ensures the queue contains mostly recent requests.
+        return _requestTimeline.Count;
     }
 
     private void ValidateOptions()

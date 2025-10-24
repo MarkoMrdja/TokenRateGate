@@ -32,21 +32,24 @@ public record TokenUsageStats(
     public bool IsNearCapacity => UsagePercentage > 80.0;
 
     /// <summary>
-    /// Estimated time until full capacity based on current reservation rate.
-    /// Returns null if no recent reservations to base calculation on.
+    /// Estimated time until full capacity based on current token consumption rate.
+    /// Returns null because accurate calculation requires token consumption rate tracking,
+    /// which is not currently available in this stats snapshot.
+    /// TODO: Track token consumption rate to enable this calculation.
     /// </summary>
     public TimeSpan? EstimatedTimeToCapacity
     {
         get
         {
-            if (RequestsInLastMinute == 0 || AvailableTokens <= 0)
-                return null;
-
-            // Simple linear projection based on recent request rate
-            var tokensPerSecond = (double)RequestsInLastMinute / 60.0;
-            var secondsToCapacity = AvailableTokens / tokensPerSecond;
-            
-            return TimeSpan.FromSeconds(secondsToCapacity);
+            // The previous implementation incorrectly used request count instead of token consumption rate.
+            // To calculate this properly, we would need:
+            // - Recent token consumption history (not just request count)
+            // - Average tokens per request
+            // - Time-weighted consumption rate
+            //
+            // Since this data is not available in the current implementation,
+            // we return null rather than providing an incorrect estimate.
+            return null;
         }
     }
 }
