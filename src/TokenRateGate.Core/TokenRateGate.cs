@@ -41,7 +41,53 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private volatile bool _disposed;
 
     private DateTime _lastCleanup = DateTime.MinValue;
-    private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(3); // TODO: Consider making this configurable
+
+    // ============================================================================
+    // CONSTANTS - Internal Operation Timing
+    // ============================================================================
+
+    /// <summary>
+    /// Interval between cleanup operations. Cleanup runs at most once per this interval
+    /// to balance between keeping data fresh and minimizing overhead.
+    /// Rationale: 3 seconds provides good balance - frequent enough for responsive stats,
+    /// infrequent enough to avoid performance impact.
+    /// </summary>
+    private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Minimum request history window in seconds. Request timeline is kept for at least
+    /// this duration or 2x the token window, whichever is larger.
+    /// Rationale: 120 seconds (2 minutes) ensures we have sufficient history for
+    /// request-per-minute calculations even with small token windows.
+    /// </summary>
+    private const int MinRequestHistoryWindowSeconds = 120;
+
+    /// <summary>
+    /// Multiplier for request history window relative to token window.
+    /// Rationale: 2x ensures we capture sufficient request history for rate calculations.
+    /// </summary>
+    private const int RequestHistoryWindowMultiplier = 2;
+
+    /// <summary>
+    /// Minimum timeout before considering a reservation stale (in seconds).
+    /// Rationale: 600 seconds (10 minutes) is reasonable minimum - shorter would risk
+    /// cleaning up legitimately slow requests, longer would waste memory.
+    /// </summary>
+    private const int MinStaleReservationTimeoutSeconds = 600;
+
+    /// <summary>
+    /// Maximum timeout before considering a reservation stale (in seconds).
+    /// Rationale: 86400 seconds (24 hours) is absolute maximum - any reservation
+    /// older than this is definitely stale and should be cleaned up.
+    /// </summary>
+    private const int MaxStaleReservationTimeoutSeconds = 86400;
+
+    /// <summary>
+    /// Multiplier for stale reservation timeout relative to token window.
+    /// Rationale: 10x the token window is generous buffer for request completion
+    /// while ensuring stale reservations don't accumulate indefinitely.
+    /// </summary>
+    private const int StaleReservationTimeoutMultiplier = 10;
 
     // ============================================================================
     // CONSTRUCTORS
@@ -283,6 +329,12 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     }
 
     // Must be called inside the lock
+    // Note: This method intentionally holds the lock while calling TryProcessingWaitingRequests()
+    // to ensure atomicity between freeing tokens and granting new reservations. While this extends
+    // lock hold time, it prevents race conditions and is acceptable since:
+    // 1. Cleanup runs at most once every 3 seconds (_internalOperationInterval)
+    // 2. Processing waiting requests is typically fast (immediate capacity checks)
+    // 3. Alternative (releasing lock before processing) would introduce race conditions
     private void CleanupExpiredRecords()
     {
         var now =  DateTime.UtcNow;
@@ -293,7 +345,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         bool tokensFreed = CleanupTokenTimeline(now);
         CleanupRequestTimeline(now);
         CleanupStaleReservations(now);
-        
+
         _lastCleanup = now;
 
         if (tokensFreed && _waitingRequests.Count > 0)
@@ -328,9 +380,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private void CleanupRequestTimeline(DateTime now)
     {
-        var requestHistoryWindow = TimeSpan.FromSeconds(Math.Max(120, _options.WindowSeconds * 2));
+        var requestHistoryWindow = TimeSpan.FromSeconds(
+            Math.Max(MinRequestHistoryWindowSeconds, _options.WindowSeconds * RequestHistoryWindowMultiplier));
         var cutoff = now.Subtract(requestHistoryWindow);
-        
+
         while (_requestTimeline.Count > 0 && _requestTimeline.Peek() < cutoff)
         {
             _requestTimeline.Dequeue();
@@ -339,7 +392,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private void CleanupStaleReservations(DateTime now)
     {
-        var staleTimeout = TimeSpan.FromSeconds(Math.Max(600, Math.Min(86400, _options.WindowSeconds * 10)));
+        var staleTimeout = TimeSpan.FromSeconds(
+            Math.Max(MinStaleReservationTimeoutSeconds,
+                Math.Min(MaxStaleReservationTimeoutSeconds,
+                    _options.WindowSeconds * StaleReservationTimeoutMultiplier)));
         var staleReservationCutoff = now.Subtract(staleTimeout);
         
         var staleIds = _activeReservations
@@ -536,10 +592,12 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         lock (_lock)
         {
             CleanupExpiredRecords();
-            
+
             int currentUsage =  GetCurrentUsageInternal();
             int reservedTokens = GetReservedTokensInternal();
-            int availableTokens = Math.Max(0, _options.TokenLimit - _options.SafetyBuffer - currentUsage);
+            // Available tokens based on effective limit (which already accounts for safety buffer in HasCapacityInternal)
+            int effectiveLimit = _options.TokenLimit - _options.SafetyBuffer;
+            int availableTokens = Math.Max(0, effectiveLimit - currentUsage);
             
             return new TokenUsageStats(
                 currentUsage,

@@ -14,17 +14,24 @@ public interface ITokenRateGate
     Task<TokenReservation> ReserveTokensAsync(int inputTokens, int estimatedOutputTokens = 0, CancellationToken cancellationToken = default);
     
     /// <summary>
-    /// Gets current token usage within the time window
+    /// Gets current token usage within the time window.
+    /// Note: Statistics are eventually consistent. During idle periods (no active requests),
+    /// expired records may not be cleaned until the next request arrives.
     /// </summary>
     int GetCurrentUsage();
-    
+
     /// <summary>
-    /// Gets currently reserved tokens
+    /// Gets currently reserved tokens.
+    /// Note: Statistics are eventually consistent. During idle periods (no active requests),
+    /// expired records may not be cleaned until the next request arrives.
     /// </summary>
     int GetReservedTokens();
-    
+
     /// <summary>
-    /// Gets comprehensive usage statistics
+    /// Gets comprehensive usage statistics.
+    /// Note: Statistics are eventually consistent. During idle periods (no active requests),
+    /// expired records may not be cleaned until the next request arrives. This is by design
+    /// to avoid unnecessary background processing when the system is idle.
     /// </summary>
     TokenUsageStats GetUsageStats();
 }
