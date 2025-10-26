@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net6.0;net8.0;net9.0</TargetFrameworks>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+        <!-- Package Metadata -->
+        <PackageId>TokenRateGate.OpenAI</PackageId>
+        <Version>1.0.0-alpha.1</Version>
+        <Authors>TokenRateGate Contributors</Authors>
+        <Description>OpenAI integration for TokenRateGate with tiktoken-based token estimation and rate-limited client wrappers</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;tiktoken;gpt-4;gpt-3.5</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- OpenAI SDK -->
+        <PackageReference Include="OpenAI" Version="2.2.0" />
+
+        <!-- Microsoft ML Tokenizers for tiktoken support -->
+        <PackageReference Include="Microsoft.ML.Tokenizers" Version="1.0.2" />
+        <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="1.0.2" />
+        <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="1.0.2" />
+
+        <!-- Logging -->
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.7" />
+        <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.7" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TokenRateGate.Abstractions/TokenRateGate.Abstractions.csproj" />
+        <ProjectReference Include="../TokenRateGate.Core/TokenRateGate.Core.csproj" />
+    </ItemGroup>
+
+</Project>
