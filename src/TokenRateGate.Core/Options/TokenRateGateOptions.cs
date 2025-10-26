@@ -18,10 +18,12 @@ public class TokenRateGateOptions
     public int WindowSeconds { get; set; } = 60;
     
     /// <summary>
-    /// Number of tokens to reserve as a safety buffer to prevent hitting exact API limits.
+    /// Percentage of TokenLimit to reserve as a safety buffer to prevent hitting exact API limits.
     /// This accounts for timing variations and measurement inaccuracies.
+    /// Value should be between 0.0 (0%) and 1.0 (100%).
+    /// Default: 0.05 (5% of the token limit).
     /// </summary>
-    public int SafetyBuffer { get; set; } = 50_000;
+    public double SafetyBufferPercentage { get; set; } = 0.05;
 
     #endregion
     
@@ -29,9 +31,11 @@ public class TokenRateGateOptions
     
     /// <summary>
     /// Maximum number of simultaneous token reservation attempts allowed.
-    /// Controls a system load and prevents resource exhaustion under high concurrency.
+    /// Controls system load and prevents resource exhaustion under high concurrency.
+    /// This limits both active reservations and queued requests waiting for capacity.
+    /// Default: 1000. Maximum allowed: 10,000 (enforced for safety).
     /// </summary>
-    public int MaxConcurrentRequests { get; set; } = 1;
+    public int MaxConcurrentRequests { get; set; } = 1000;
     
     /// <summary>
     /// Maximum number of API requests allowed per minute, separate from token limits.
@@ -49,10 +53,15 @@ public class TokenRateGateOptions
     #endregion
     
     /// <summary>
-    /// Maximum time a request can wait in the queue before timing out.
-    /// Prevents requests from waiting indefinitely during high load or system issues.
+    /// Maximum time a request can wait for capacity before timing out.
+    /// Set to null to allow requests to wait indefinitely (true "gate" behavior - all requests eventually succeed).
+    /// Set to a TimeSpan value to fail requests that can't acquire capacity within that time (circuit breaker pattern).
+    /// Default: 2 minutes.
+    ///
+    /// Note: This timeout applies from the moment ReserveTokensAsync() is called, including time waiting
+    /// for the concurrency semaphore AND time waiting in the capacity queue.
     /// </summary>
-    public TimeSpan MaxWaitTime { get; set; } = TimeSpan.FromMinutes(2);
+    public TimeSpan? MaxWaitTime { get; set; } = TimeSpan.FromMinutes(2);
 
     #region Token estimation strategy for the output
     

@@ -18,7 +18,7 @@ public static class TokenRateGateTestFactory
         {
             TokenLimit = 10000,
             WindowSeconds = 60,
-            SafetyBuffer = 1000,
+            SafetyBufferPercentage = 0.10, // 10% safety buffer (1000 tokens)
             MaxConcurrentRequests = 1,
             MaxRequestsPerMinute = 100,
             RequestWindowSeconds = 60,
@@ -38,7 +38,7 @@ public static class TokenRateGateTestFactory
         {
             TokenLimit = 100000,
             WindowSeconds = 60,
-            SafetyBuffer = 5000,
+            SafetyBufferPercentage = 0.05, // 5% safety buffer (5000 tokens)
             MaxConcurrentRequests = maxConcurrent,
             MaxRequestsPerMinute = 1000,
             RequestWindowSeconds = 60,
@@ -58,7 +58,7 @@ public static class TokenRateGateTestFactory
         {
             TokenLimit = 50000,
             WindowSeconds = 1, // Very short window to trigger frequent cleanup
-            SafetyBuffer = 5000,
+            SafetyBufferPercentage = 0.10, // 10% safety buffer (5000 tokens)
             MaxConcurrentRequests = 5,
             MaxRequestsPerMinute = 100,
             RequestWindowSeconds = 1,
@@ -78,7 +78,7 @@ public static class TokenRateGateTestFactory
         {
             TokenLimit = 10000,
             WindowSeconds = 60,
-            SafetyBuffer = 2000,
+            SafetyBufferPercentage = 0.20, // 20% safety buffer (2000 tokens)
             MaxConcurrentRequests = 2,
             MaxRequestsPerMinute = 50,
             RequestWindowSeconds = 60,

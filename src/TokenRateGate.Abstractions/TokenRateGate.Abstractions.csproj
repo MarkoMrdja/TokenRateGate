@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net6.0;net8.0;net9.0</TargetFrameworks>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+        <!-- Package Metadata -->
+        <PackageId>TokenRateGate.Abstractions</PackageId>
+        <Version>1.0.0-alpha.1</Version>
+        <Authors>TokenRateGate Contributors</Authors>
+        <Description>Core abstractions for TokenRateGate enabling provider integrations and extensibility</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;abstractions</PackageTags>
+    </PropertyGroup>
+
+</Project>

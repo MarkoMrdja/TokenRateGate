@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net6.0;net8.0;net9.0</TargetFrameworks>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+        <!-- Package Metadata -->
+        <PackageId>TokenRateGate.Extensions</PackageId>
+        <Version>1.0.0-alpha.1</Version>
+        <Authors>TokenRateGate Contributors</Authors>
+        <Description>Base implementations and extension methods for building rate-limited LLM clients</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;extensions</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\TokenRateGate.Abstractions\TokenRateGate.Abstractions.csproj" />
+        <ProjectReference Include="..\TokenRateGate.Core\TokenRateGate.Core.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.7" />
+    </ItemGroup>
+
+</Project>
