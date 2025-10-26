@@ -52,10 +52,11 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     /// <summary>
     /// Interval between cleanup operations. Cleanup runs at most once per this interval
     /// to balance between keeping data fresh and minimizing overhead.
-    /// Rationale: 3 seconds provides good balance - frequent enough for responsive stats,
-    /// infrequent enough to avoid performance impact.
+    /// Rationale: 1 second provides good balance - frequent enough for responsive stats and monitoring,
+    /// while overhead remains negligible since cleanup is O(n) where n is typically very small.
+    /// Note: Queue processing bypasses this throttle via forceCleanup parameter.
     /// </summary>
-    private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(3);
+    private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// Minimum request history window in seconds. Request timeline is kept for at least
@@ -388,14 +389,15 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // Note: This method intentionally holds the lock while calling TryProcessingWaitingRequests()
     // to ensure atomicity between freeing tokens and granting new reservations. While this extends
     // lock hold time, it prevents race conditions and is acceptable since:
-    // 1. Cleanup runs at most once every 3 seconds (_internalOperationInterval)
+    // 1. Cleanup runs at most once every 3 seconds (_internalOperationInterval) for periodic cleanup
     // 2. Processing waiting requests is typically fast (immediate capacity checks)
     // 3. Alternative (releasing lock before processing) would introduce race conditions
-    private void CleanupExpiredRecords()
+    private void CleanupExpiredRecords(bool forceCleanup = false)
     {
         var now =  DateTime.UtcNow;
 
-        if (now - _lastCleanup < _internalOperationInterval)
+        // Throttle periodic cleanup, but allow forced cleanup for queue processing
+        if (!forceCleanup && now - _lastCleanup < _internalOperationInterval)
             return;
 
         bool tokensFreed = CleanupTokenTimeline(now);
@@ -477,9 +479,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 UpdateSafetyTimerState();
                 return;
             }
-            
-            CleanupExpiredRecords();
-            
+
+            // Force cleanup to ensure tokens are freed immediately for waiting requests
+            CleanupExpiredRecords(forceCleanup: true);
+
             var currentNode = _waitingRequests.First;
             grantedRequests = new List<WaitingRequest>();
 
