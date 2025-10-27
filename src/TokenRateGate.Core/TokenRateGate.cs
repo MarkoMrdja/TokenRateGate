@@ -196,11 +196,11 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
                     // UpdateSafetyTimerState is already called inside TryReserveImmediately under lock
 
-                    // Release semaphore immediately after successful reservation
-                    _concurrencyLimiter.Release();
-                    semaphoreAcquired = false;
+                    // Keep semaphore acquired - it will be released when reservation is disposed
+                    // This ensures MaxConcurrentRequests limits active reservations, not just admission
+                    semaphoreAcquired = false; // Ownership transferred to TokenReservation
 
-                    return new TokenReservation(immediateId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
+                    return new TokenReservation(immediateId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
                 }
 
                 var waitingRequest = new WaitingRequest(totalEstimatedTokens, cancellationToken);
@@ -219,11 +219,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
                         UpdateSafetyTimerState();
 
-                        // Release semaphore immediately after successful reservation
-                        _concurrencyLimiter.Release();
-                        semaphoreAcquired = false;
+                        // Keep semaphore acquired - it will be released when reservation is disposed
+                        semaphoreAcquired = false; // Ownership transferred to TokenReservation
 
-                        return new TokenReservation(doubleCheckId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
+                        return new TokenReservation(doubleCheckId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
                     }
 
                     node = _waitingRequests.AddLast(waitingRequest);
@@ -240,15 +239,19 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                         reservedTokens, Math.Max(0, _options.TokenLimit - _safetyBuffer - currentUsage));
 
                     // Register cancellation callback INSIDE the lock to avoid race condition
+                    // The callback must check if the request is still in the queue before cancelling
                     cancellationRegistration = effectiveCancellationToken.Register(() =>
                     {
                         lock (_lock)
                         {
-                            if (waitingRequest.Node != null)
+                            // Only cancel if still in queue (node not null and not already granted)
+                            if (waitingRequest.Node != null && _waitingRequests.Contains(waitingRequest.Node.Value))
                             {
                                 _waitingRequests.Remove(waitingRequest.Node);
                                 waitingRequest.Node = null;
-                                waitingRequest.TaskCompletionSource.TrySetCanceled();
+
+                                // Set cancelled AFTER removing from queue to prevent race
+                                waitingRequest.TaskCompletionSource.TrySetCanceled(effectiveCancellationToken);
 
                                 _logger.LogDebug("Cancelled waiting request: {TotalTokens} tokens", totalEstimatedTokens);
 
@@ -278,11 +281,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     _metrics?.RecordReservationGranted();
                     _metrics?.RecordWaitTime(totalWaitTime);
 
-                    // Release semaphore after successfully getting reservation from queue
-                    _concurrencyLimiter.Release();
-                    semaphoreAcquired = false;
+                    // Keep semaphore acquired - it will be released when reservation is disposed
+                    semaphoreAcquired = false; // Ownership transferred to TokenReservation
 
-                    return new TokenReservation(reservationId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync);
+                    return new TokenReservation(reservationId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
                 }
                 catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested &&
                                                             !cancellationToken.IsCancellationRequested)
@@ -324,7 +326,16 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     {
         long total;
 
-        if (estimatedOutputTokens > 0)
+        // If user explicitly provided estimatedOutputTokens (including 0), use it directly
+        // Estimation strategies are only used when estimatedOutputTokens is provided as the default (0)
+        // and the caller intends to use estimation. For explicit 0 (no output tokens), we honor that.
+        // To distinguish: if someone wants estimation, they should not pass estimatedOutputTokens parameter
+        // Since we can't distinguish "not passed" from "passed 0" with current signature,
+        // we treat any explicit value >= 0 as intentional, only using strategy for very specific cases
+        //
+        // UPDATE: Simpler approach - always use explicit estimatedOutputTokens if >= 0
+        // The estimation strategy documentation should clarify it's for when you don't know output size
+        if (estimatedOutputTokens >= 0)
         {
             total = (long)inputTokens + estimatedOutputTokens;
         }
@@ -491,30 +502,37 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 var request = currentNode.Value;
                 var nextNode = currentNode.Next;
 
+                // Check cancellation - if cancelled, remove and skip
                 if (request.CancellationToken.IsCancellationRequested)
                 {
                     _waitingRequests.Remove(currentNode);
                     request.Node = null;
-                    request.TaskCompletionSource.TrySetCanceled();
-                    
+                    // Don't set result here - the cancellation callback already did it
+
                     _logger.LogDebug("Removed cancelled request: {RequiredTokens} tokens", request.RequiredTokens);
+
+                    currentNode = nextNode;
+                    continue;
                 }
-                else if (TryReserveImmediatelyInternal(request.RequiredTokens, out Guid reservationId))
+
+                // Try to grant this request
+                if (TryReserveImmediatelyInternal(request.RequiredTokens, out Guid reservationId))
                 {
                     _waitingRequests.Remove(currentNode);
                     request.Node = null;
                     request.ReservationId = reservationId;
                     grantedRequests.Add(request);
-                    
+
                     _logger.LogDebug("Granted waiting request: {RequiredTokens} tokens with ID {ReservationID} (queue: {Remaining})",
                         request.RequiredTokens, reservationId, _waitingRequests.Count);
                 }
                 else
                 {
+                    // No more capacity available, stop processing
                     _logger.LogDebug("Insufficient capacity for {RequiredTokens} tokens, stopping queue processing " +
-                                     "(current usage: {CurrentUsage}/{TokenLimit}",
-                    request.RequiredTokens, GetCurrentUsageInternal(), _options.TokenLimit);
-                    
+                                     "(current usage: {CurrentUsage}/{TokenLimit})",
+                        request.RequiredTokens, GetCurrentUsageInternal(), _options.TokenLimit);
+
                     break;
                 }
 
@@ -536,13 +554,15 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     {
         bool hasWaitingRequests =  _waitingRequests.Count > 0;
         bool hasActiveReservations = _activeReservations.Count > 0;
-        
+
         // Only run timer when we have waiting requests but no active work - deadlock scenario
         bool shouldRunTimer = hasWaitingRequests && !hasActiveReservations;
 
         if (shouldRunTimer)
         {
-            _safetyTimer.Change(_internalOperationInterval, _internalOperationInterval);
+            // Use a shorter interval (100ms) for the safety timer to ensure it triggers quickly
+            // The safety timer uses forceCleanup=true so cleanup throttling doesn't apply
+            _safetyTimer.Change(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
             _logger.LogDebug("Safety timer STARTED (waiting: {WaitingCount}, active: {ActiveCount})",
                             _waitingRequests.Count, _activeReservations.Count);
         }
@@ -565,14 +585,21 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             {
                 if (_waitingRequests.Count > 0 && _activeReservations.Count == 0)
                 {
-                    CleanupExpiredRecords();
-                    TryProcessingWaitingRequests();
-                    UpdateSafetyTimerState();
+                    // Use forceCleanup to bypass throttling in safety timer
+                    CleanupExpiredRecords(forceCleanup: true);
+
+                    _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests",
+                        _waitingRequests.Count);
                 }
-                else
-                {
-                    UpdateSafetyTimerState();
-                }
+
+                UpdateSafetyTimerState();
+            }
+
+            // Call TryProcessingWaitingRequests outside the lock to avoid deadlock
+            // and allow proper completion of granted requests
+            if (!_disposed && _waitingRequests.Count > 0)
+            {
+                TryProcessingWaitingRequests();
             }
         }
         catch (Exception ex)
@@ -590,6 +617,23 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         bool hasRequestCapacity = GetCurrentRequestCount() < _options.MaxRequestsPerMinute;
         
         return hasTokenCapacity && hasRequestCapacity;
+    }
+
+    private void RecordActualUsageCallback(TokenReservation reservation, int actualTokensUsed)
+    {
+        if (_disposed) return;
+
+        lock (_lock)
+        {
+            // Update the actual usage in the active reservation
+            if (_activeReservations.TryGetValue(reservation.Id, out var pendingReservation))
+            {
+                pendingReservation.ActualTokensUsed = actualTokensUsed;
+
+                _logger.LogDebug("Recorded actual usage for reservation {ReservationId}: {ActualTokens} tokens (reserved: {ReservedTokens})",
+                    reservation.Id, actualTokensUsed, reservation.ReservedTokens);
+            }
+        }
     }
 
     private Task ReleaseReservationAsync(TokenReservation reservation)
@@ -655,11 +699,32 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         {
             CleanupExpiredRecords();
 
-            long currentUsage = _currentActualUsage;  // Only completed requests
-            long reservedTokens = GetReservedTokensInternal();
+            // CurrentUsage includes:
+            // 1. Completed requests (from _usageTimeline)
+            // 2. Active reservations with recorded actual usage
+            // This provides real-time visibility into actual token consumption
+            long completedUsage = _currentActualUsage;
+
+            // Calculate actual usage from active reservations that have called RecordActualUsage()
+            long activeActualUsage = _activeReservations.Values
+                .Where(r => r.ActualTokensUsed.HasValue)
+                .Sum(r => (long)r.ActualTokensUsed!.Value);
+
+            long currentUsage = completedUsage + activeActualUsage;
+
+            // ReservedTokens now represents ONLY estimated tokens for reservations that haven't called RecordActualUsage()
+            // For reservations that have recorded actual usage, we use the actual value (already in currentUsage)
+            long reservedTokens = _activeReservations.Values
+                .Where(r => !r.ActualTokensUsed.HasValue)
+                .Sum(r => (long)r.EstimatedTokens);
+
             long tokenLimit = _options.TokenLimit;
             long effectiveCapacity = tokenLimit - _safetyBuffer;
-            long availableCapacity = Math.Max(0, effectiveCapacity - currentUsage - reservedTokens);
+
+            // Available capacity accounts for both completed usage AND reserved/actual tokens
+            long totalUsage = currentUsage + reservedTokens;
+            long availableCapacity = Math.Max(0, effectiveCapacity - totalUsage);
+
             int activeReservationsCount = _activeReservations.Count;
             int waitingRequestsCount = _waitingRequests.Count;
 
@@ -702,12 +767,25 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private long GetCurrentUsageInternal()
     {
-        return _currentActualUsage + GetReservedTokensInternal();
+        // This method is used for capacity calculations
+        // It includes: completed usage + actual usage from active + estimated from active (not yet recorded)
+        long completedUsage = _currentActualUsage;
+
+        // For each active reservation:
+        // - If actual usage recorded: use actual
+        // - If not recorded yet: use estimated
+        long activeUsage = _activeReservations.Values.Sum(r =>
+            r.ActualTokensUsed.HasValue ? (long)r.ActualTokensUsed.Value : (long)r.EstimatedTokens);
+
+        return completedUsage + activeUsage;
     }
 
     private long GetReservedTokensInternal()
     {
-        return _activeReservations.Values.Sum(r => (long)r.EstimatedTokens);
+        // Only count reservations that haven't recorded actual usage yet
+        return _activeReservations.Values
+            .Where(r => !r.ActualTokensUsed.HasValue)
+            .Sum(r => (long)r.EstimatedTokens);
     }
 
     private int GetCurrentRequestCount()
@@ -814,7 +892,21 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // ============================================================================
 
     private record TokenUsageEntry(DateTime Timestamp, int ActualTokens, int ReservedTokens);
-    private record PendingReservations(Guid Id, int EstimatedTokens, DateTime Timestamp);
+    private class PendingReservations
+    {
+        public Guid Id { get; }
+        public int EstimatedTokens { get; }
+        public DateTime Timestamp { get; }
+        public int? ActualTokensUsed { get; set; }
+
+        public PendingReservations(Guid id, int estimatedTokens, DateTime timestamp)
+        {
+            Id = id;
+            EstimatedTokens = estimatedTokens;
+            Timestamp = timestamp;
+            ActualTokensUsed = null;
+        }
+    }
     private class WaitingRequest
     {
         public int RequiredTokens { get; }
