@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>net6.0;net8.0;net9.0</TargetFrameworks>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+        <!-- Package Metadata -->
+        <PackageId>TokenRateGate.Azure</PackageId>
+        <Version>1.0.0-alpha.1</Version>
+        <Authors>TokenRateGate Contributors</Authors>
+        <Description>Azure OpenAI integration for TokenRateGate with rate-limited client wrappers, managed identity support, and multi-deployment capabilities</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <PackageTags>rate-limiting;llm;azure;azure-openai;tokens;api;rate-limit;gpt-4;gpt-3.5;managed-identity</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Azure OpenAI SDK - uses same OpenAI types but with Azure-specific client -->
+        <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
+
+        <!-- Azure Identity for managed identity and DefaultAzureCredential support -->
+        <PackageReference Include="Azure.Identity" Version="1.13.1" />
+
+        <!-- Microsoft ML Tokenizers for tiktoken support (same as OpenAI integration) -->
+        <PackageReference Include="Microsoft.ML.Tokenizers" Version="1.0.2" />
+        <PackageReference Include="Microsoft.ML.Tokenizers.Data.Cl100kBase" Version="1.0.2" />
+        <PackageReference Include="Microsoft.ML.Tokenizers.Data.O200kBase" Version="1.0.2" />
+
+        <!-- Logging and Options -->
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.7" />
+        <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.7" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TokenRateGate.Abstractions/TokenRateGate.Abstractions.csproj" />
+        <ProjectReference Include="../TokenRateGate.Core/TokenRateGate.Core.csproj" />
+        <!-- Reference OpenAI integration for shared token estimation logic -->
+        <ProjectReference Include="../TokenRateGate.OpenAI/TokenRateGate.OpenAI.csproj" />
+    </ItemGroup>
+
+</Project>
