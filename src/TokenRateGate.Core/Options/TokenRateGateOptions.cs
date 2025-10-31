@@ -1,4 +1,5 @@
-﻿using TokenRateGate.Core.Utils;
+﻿using TokenRateGate.Core.Abstractions;
+using TokenRateGate.Core.Utils;
 
 namespace TokenRateGate.Core.Options;
 
@@ -63,8 +64,16 @@ public class TokenRateGateOptions
     /// </summary>
     public TimeSpan? MaxWaitTime { get; set; } = TimeSpan.FromMinutes(2);
 
-    #region Token estimation strategy for the output
-    
+    #region Token estimation
+
+    /// <summary>
+    /// Token estimator for counting tokens in text inputs.
+    /// Used to estimate token counts when not provided explicitly by the caller.
+    /// If null, a default CharacterBasedTokenEstimator (4 chars per token) will be used.
+    /// Set this to use provider-specific estimators (e.g., tiktoken for OpenAI).
+    /// </summary>
+    public ITokenEstimator? TokenEstimator { get; set; }
+
     /// <summary>
     /// Strategy for estimating output tokens when not explicitly provided.
     /// Affects reservation accuracy and system efficiency.
@@ -85,6 +94,18 @@ public class TokenRateGateOptions
     /// Best when you've tested the model with a similar data and know the approximate output size
     /// </summary>
     public int DefaultOutputTokens { get; set; } = 1000;
-    
+
     #endregion
+
+    /// <summary>
+    /// Optional OpenAI-specific configuration.
+    /// Used when rate-limiting OpenAI API calls.
+    /// </summary>
+    public OpenAIConfiguration? OpenAI { get; set; }
+
+    /// <summary>
+    /// Optional Azure OpenAI-specific configuration.
+    /// Used when rate-limiting Azure OpenAI API calls.
+    /// </summary>
+    public AzureConfiguration? Azure { get; set; }
 }

@@ -1,8 +1,10 @@
 ﻿using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TokenRateGate.Abstractions;
+using TokenRateGate.Core.Abstractions;
 using TokenRateGate.Core.Models;
 using TokenRateGate.Core.Options;
+using TokenRateGate.Core.TokenEstimation;
 using TokenRateGate.Core.Utils;
 
 namespace TokenRateGate.Core;
@@ -16,6 +18,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private readonly TokenRateGateOptions _options;
     private readonly ILogger<TokenRateGate> _logger;
     private readonly TokenRateGateMetrics? _metrics;
+    private readonly ITokenEstimator _tokenEstimator;
 
     private readonly int _safetyBuffer; // Calculated from SafetyBufferPercentage
 
@@ -45,16 +48,22 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private DateTime _lastCleanup = DateTime.MinValue;
 
+    // Flag to avoid wasteful queue processing when capacity is known to be insufficient
+    // Reset when tokens are freed during cleanup
+    private bool _hasInsufficientCapacity = false;
+
     // ============================================================================
     // CONSTANTS - Internal Operation Timing
     // ============================================================================
 
     /// <summary>
-    /// Interval between cleanup operations. Cleanup runs at most once per this interval
-    /// to balance between keeping data fresh and minimizing overhead.
-    /// Rationale: 1 second provides good balance - frequent enough for responsive stats and monitoring,
-    /// while overhead remains negligible since cleanup is O(n) where n is typically very small.
-    /// Note: Queue processing bypasses this throttle via forceCleanup parameter.
+    /// NOTE: Cleanup throttling has been removed for optimal high-throughput performance.
+    /// Cleanup is now called on every reservation attempt, which is safe because:
+    /// 1. Cleanup is O(k) where k = number of expired items (typically 1-20)
+    /// 2. The lock is already held during reservation attempts
+    /// 3. DateTime comparisons and dequeuing are extremely fast (microseconds)
+    /// 4. This ensures zero-latency token freeing for maximum throughput
+    /// The _lastCleanup field is kept for potential future metrics/debugging.
     /// </summary>
     private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(1);
 
@@ -104,6 +113,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         ValidateOptions();
 
+        // Initialize token estimator (use provided or default to CharacterBasedTokenEstimator)
+        _tokenEstimator = _options.TokenEstimator ?? new CharacterBasedTokenEstimator();
+
         // Calculate safety buffer from percentage
         _safetyBuffer = (int)(_options.TokenLimit * _options.SafetyBufferPercentage);
 
@@ -121,6 +133,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         ValidateOptions();
+
+        // Initialize token estimator (use provided or default to CharacterBasedTokenEstimator)
+        _tokenEstimator = _options.TokenEstimator ?? new CharacterBasedTokenEstimator();
 
         // Calculate safety buffer from percentage
         _safetyBuffer = (int)(_options.TokenLimit * _options.SafetyBufferPercentage);
@@ -400,16 +415,15 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // Note: This method intentionally holds the lock while calling TryProcessingWaitingRequests()
     // to ensure atomicity between freeing tokens and granting new reservations. While this extends
     // lock hold time, it prevents race conditions and is acceptable since:
-    // 1. Cleanup runs at most once every 3 seconds (_internalOperationInterval) for periodic cleanup
+    // 1. Cleanup is fast - O(k) where k = number of expired items (typically 1-20)
     // 2. Processing waiting requests is typically fast (immediate capacity checks)
     // 3. Alternative (releasing lock before processing) would introduce race conditions
     private void CleanupExpiredRecords(bool forceCleanup = false)
     {
         var now =  DateTime.UtcNow;
 
-        // Throttle periodic cleanup, but allow forced cleanup for queue processing
-        if (!forceCleanup && now - _lastCleanup < _internalOperationInterval)
-            return;
+        // Throttling removed for high-throughput performance
+        // Cleanup is fast (O(k) where k = expired items) and lock is already held
 
         bool tokensFreed = CleanupTokenTimeline(now);
         CleanupRequestTimeline(now);
@@ -437,13 +451,16 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         if (removedTokens > 0)
         {
             _currentActualUsage -= removedTokens;
-            
+
+            // Reset insufficient capacity flag since tokens were freed
+            _hasInsufficientCapacity = false;
+
             _logger.LogDebug("Cleaned {RemovedTokens} expired tokens ({RemovedEntries} entries). Current usage: {CurrentUsage}",
                              removedTokens, removedEntries, _currentActualUsage);
-            
+
             return true;
         }
-        
+
         return false;
     }
 
@@ -529,6 +546,8 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 else
                 {
                     // No more capacity available, stop processing
+                    _hasInsufficientCapacity = true;
+
                     _logger.LogDebug("Insufficient capacity for {RequiredTokens} tokens, stopping queue processing " +
                                      "(current usage: {CurrentUsage}/{TokenLimit})",
                         request.RequiredTokens, GetCurrentUsageInternal(), _options.TokenLimit);
@@ -585,19 +604,23 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             {
                 if (_waitingRequests.Count > 0 && _activeReservations.Count == 0)
                 {
-                    // Use forceCleanup to bypass throttling in safety timer
+                    // Always cleanup to free expired tokens (throttling removed for performance)
                     CleanupExpiredRecords(forceCleanup: true);
 
-                    _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests",
-                        _waitingRequests.Count);
+                    // Only log if we're going to try processing (avoid log spam)
+                    if (!_hasInsufficientCapacity)
+                    {
+                        _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests",
+                            _waitingRequests.Count);
+                    }
                 }
 
                 UpdateSafetyTimerState();
             }
 
-            // Call TryProcessingWaitingRequests outside the lock to avoid deadlock
-            // and allow proper completion of granted requests
-            if (!_disposed && _waitingRequests.Count > 0)
+            // Only try processing queue if we haven't already determined there's no capacity
+            // The flag will be reset when cleanup frees tokens, allowing processing to resume
+            if (!_disposed && _waitingRequests.Count > 0 && !_hasInsufficientCapacity)
             {
                 TryProcessingWaitingRequests();
             }
@@ -647,6 +670,13 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             if (_activeReservations.Remove(reservation.Id))
             {
                 shouldProcessQueue = _waitingRequests.Count > 0;
+
+                // Reset insufficient capacity flag when reservation is released
+                // This allows queue processing to resume even if cleanup hasn't run yet
+                if (shouldProcessQueue)
+                {
+                    _hasInsufficientCapacity = false;
+                }
 
                 if (reservation.ActualTokensUsed.HasValue)
                 {
