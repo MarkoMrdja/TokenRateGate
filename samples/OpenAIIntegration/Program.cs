@@ -102,15 +102,13 @@ class Program
         Console.WriteLine("// Step 2: Create the rate gate");
         Console.WriteLine("var rateGate = new TokenRateGate(Options.Create(options), logger);");
         Console.WriteLine();
-        Console.WriteLine("// Step 3: Create OpenAI client");
+        Console.WriteLine("// Step 3: Create OpenAI client and wrap with rate limiting");
         Console.WriteLine("var client = new ChatClient(\"gpt-4\", \"YOUR_API_KEY\");");
+        Console.WriteLine("var rateLimitedClient = client.WithRateLimit(rateGate, \"gpt-4\", loggerFactory);");
         Console.WriteLine();
-        Console.WriteLine("// Step 4: Create helper for your model");
-        Console.WriteLine("var helper = new OpenAIChatHelper(\"gpt-4\", options, logger);");
-        Console.WriteLine();
-        Console.WriteLine("// Step 5: Make rate-limited API calls");
+        Console.WriteLine("// Step 4: Make rate-limited API calls");
         Console.WriteLine("var messages = new List<ChatMessage> { new UserChatMessage(\"Hello!\") };");
-        Console.WriteLine("var response = await rateGate.ExecuteChatAsync(client, messages, helper);");
+        Console.WriteLine("var response = await rateLimitedClient.CompleteChatAsync(messages);");
         Console.WriteLine("Console.WriteLine(response.Content[0].Text);");
     }
 
@@ -160,10 +158,9 @@ class Program
     /// </summary>
     static void DemonstrateStreamingSetup()
     {
-        Console.WriteLine("// Streaming uses the same setup, different method:");
+        Console.WriteLine("// Streaming uses the same wrapper, different method:");
         Console.WriteLine();
-        Console.WriteLine("await foreach (var update in rateGate.ExecuteChatStreamingAsync(");
-        Console.WriteLine("    client, messages, helper))");
+        Console.WriteLine("await foreach (var update in rateLimitedClient.CompleteChatStreamingAsync(messages))");
         Console.WriteLine("{");
         Console.WriteLine("    if (update.ContentUpdate.Count > 0)");
         Console.WriteLine("        Console.Write(update.ContentUpdate[0].Text);");
@@ -236,8 +233,11 @@ class Program
         };
 
         var rateGate = new TokenRateGate.Core.TokenRateGate(Options.Create(options), logger);
+
+        // Create OpenAI client and wrap with rate limiting
         var client = new ChatClient("gpt-4o-mini", apiKey); // Using mini for lower cost
-        var helper = new OpenAIChatHelper("gpt-4o-mini", options);
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        var rateLimitedClient = client.WithRateLimit(rateGate, "gpt-4o-mini", loggerFactory);
 
         var messages = new List<ChatMessage>
         {
@@ -248,7 +248,7 @@ class Program
 
         try
         {
-            var response = await rateGate.ExecuteChatAsync(client, messages, helper);
+            var response = await rateLimitedClient.CompleteChatAsync(messages);
             Console.WriteLine($"\nResponse: {response.Content[0].Text}");
 
             var stats = rateGate.GetUsageStats();
@@ -272,8 +272,11 @@ class Program
         };
 
         var rateGate = new TokenRateGate.Core.TokenRateGate(Options.Create(options), logger);
+
+        // Create OpenAI client and wrap with rate limiting
         var client = new ChatClient("gpt-4o-mini", apiKey);
-        var helper = new OpenAIChatHelper("gpt-4o-mini", options);
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        var rateLimitedClient = client.WithRateLimit(rateGate, "gpt-4o-mini", loggerFactory);
 
         var messages = new List<ChatMessage>
         {
@@ -284,7 +287,7 @@ class Program
 
         try
         {
-            await foreach (var update in rateGate.ExecuteChatStreamingAsync(client, messages, helper))
+            await foreach (var update in rateLimitedClient.CompleteChatStreamingAsync(messages))
             {
                 if (update.ContentUpdate.Count > 0)
                 {
@@ -312,8 +315,11 @@ class Program
         };
 
         var rateGate = new TokenRateGate.Core.TokenRateGate(Options.Create(options), logger);
+
+        // Create OpenAI client and wrap with rate limiting
         var client = new ChatClient("gpt-4o-mini", apiKey);
-        var helper = new OpenAIChatHelper("gpt-4o-mini", options);
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        var rateLimitedClient = client.WithRateLimit(rateGate, "gpt-4o-mini", loggerFactory);
 
         var questions = new[]
         {
@@ -329,7 +335,7 @@ class Program
             var tasks = questions.Select(async (question, index) =>
             {
                 var messages = new List<ChatMessage> { new UserChatMessage(question) };
-                var response = await rateGate.ExecuteChatAsync(client, messages, helper);
+                var response = await rateLimitedClient.CompleteChatAsync(messages);
                 return (index + 1, question, response.Content[0].Text);
             });
 
@@ -362,8 +368,11 @@ class Program
         };
 
         var rateGate = new TokenRateGate.Core.TokenRateGate(Options.Create(options), logger);
+
+        // Create OpenAI client and wrap with rate limiting
         var client = new ChatClient("gpt-4o-mini", apiKey);
-        var helper = new OpenAIChatHelper("gpt-4o-mini", options);
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+        var rateLimitedClient = client.WithRateLimit(rateGate, "gpt-4o-mini", loggerFactory);
 
         Console.WriteLine("Monitoring token usage across multiple requests...\n");
 
@@ -382,7 +391,7 @@ class Program
                     new UserChatMessage($"Tell me a one-sentence fact about number {i}.")
                 };
 
-                var response = await rateGate.ExecuteChatAsync(client, messages, helper);
+                var response = await rateLimitedClient.CompleteChatAsync(messages);
 
                 var statsAfter = rateGate.GetUsageStats();
                 Console.WriteLine($"Request {i} - After:");
