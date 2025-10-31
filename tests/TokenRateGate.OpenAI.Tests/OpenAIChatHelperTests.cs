@@ -56,14 +56,13 @@ public class OpenAIChatHelperTests
     [Fact]
     public void Constructor_WithLogger_ConfiguresLogging()
     {
-        // Arrange
-        var logger = NullLogger<OpenAIChatHelper>.Instance;
+        // Arrange (no longer using logger directly - now using logger factory)
 
         // Act
-        var action = () => new OpenAIChatHelper("gpt-4", null, logger);
+        var action = () => new OpenAIChatHelper("gpt-4", null, null);
 
         // Assert
-        action.Should().NotThrow("logger should be accepted");
+        action.Should().NotThrow("null logger factory should be accepted");
     }
 
     [Theory]

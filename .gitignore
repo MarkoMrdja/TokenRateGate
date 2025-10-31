@@ -11,6 +11,12 @@
 *.sln.docstates
 *.env
 
+# Project-specific excludes
+CLAUDE.md
+MIGRATION.md
+SECURITY_REVIEW.md
+.beads/
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
