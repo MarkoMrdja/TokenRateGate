@@ -25,20 +25,19 @@ public class OpenAITokenEstimator : ITokenEstimator<IEnumerable<ChatMessage>>
     /// </summary>
     /// <param name="modelName">The OpenAI model name (e.g., "gpt-4", "gpt-3.5-turbo")</param>
     /// <param name="options">TokenRateGate configuration options for output estimation</param>
-    /// <param name="logger">Logger for diagnostics</param>
+    /// <param name="logger">Optional logger for diagnostics</param>
     public OpenAITokenEstimator(
         string modelName,
         IOptions<TokenRateGateOptions> options,
-        ILogger<OpenAITokenEstimator> logger)
+        ILogger<OpenAITokenEstimator>? logger = null)
     {
         if (string.IsNullOrWhiteSpace(modelName))
             throw new ArgumentException("Model name cannot be null or whitespace", nameof(modelName));
         ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(logger);
 
         _modelName = modelName;
         _options = options.Value;
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<OpenAITokenEstimator>.Instance;
         _encodingType = OpenAIModelDefinitions.GetEncodingForModel(modelName);
 
         _tokenizer = new Lazy<Tokenizer>(() => CreateTokenizer(_encodingType));
@@ -84,6 +83,9 @@ public class OpenAITokenEstimator : ITokenEstimator<IEnumerable<ChatMessage>>
     public Task<int> EstimateInputTokensAsync(IEnumerable<ChatMessage> request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // Check for cancellation before starting work
+        cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
@@ -181,6 +183,9 @@ public class OpenAITokenEstimator : ITokenEstimator<IEnumerable<ChatMessage>>
     public Task<int> EstimateOutputTokensAsync(IEnumerable<ChatMessage> request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // Check for cancellation before starting work
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Output token estimation is inherently uncertain
         // Use the configured strategy from TokenRateGateOptions

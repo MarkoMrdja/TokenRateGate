@@ -11,7 +11,7 @@ namespace TokenRateGate.OpenAI;
 /// Encapsulates token estimation and usage extraction logic for OpenAI chat completions.
 /// This class is designed to be reused across multiple API calls to avoid redundant configuration.
 /// </summary>
-public class OpenAIChatHelper
+internal class OpenAIChatHelper
 {
     private readonly string _modelName;
     private readonly OpenAITokenEstimator _estimator;
@@ -40,13 +40,11 @@ public class OpenAIChatHelper
         var optionsValue = options ?? new TokenRateGateOptions();
         var optionsWrapper = Options.Create(optionsValue);
 
-        // Create estimator with model-specific tiktoken encoding
-        var estimatorLogger = (ILogger<OpenAITokenEstimator>?)logger ?? NullLogger<OpenAITokenEstimator>.Instance;
-        _estimator = new OpenAITokenEstimator(modelName, optionsWrapper, estimatorLogger);
+        // Create estimator with model-specific tiktoken encoding (uses NullLogger internally)
+        _estimator = new OpenAITokenEstimator(modelName, optionsWrapper);
 
-        // Create usage extractor
-        var extractorLogger = (ILogger<OpenAIUsageExtractor>?)logger ?? NullLogger<OpenAIUsageExtractor>.Instance;
-        _extractor = new OpenAIUsageExtractor(extractorLogger);
+        // Create usage extractor (uses NullLogger internally)
+        _extractor = new OpenAIUsageExtractor();
 
         _logger.LogInformation(
             "Created OpenAI chat helper for model {ModelName}",

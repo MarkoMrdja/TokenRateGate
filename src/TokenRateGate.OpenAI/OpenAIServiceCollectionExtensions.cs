@@ -185,7 +185,7 @@ public static class OpenAIServiceCollectionExtensions
 /// Factory interface for creating OpenAIChatHelper instances for different models.
 /// This is useful in scenarios where the model name is determined at runtime.
 /// </summary>
-public interface IOpenAIChatHelperFactory
+internal interface IOpenAIChatHelperFactory
 {
     /// <summary>
     /// Creates an OpenAI chat helper for the specified model.

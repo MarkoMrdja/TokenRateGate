@@ -7,46 +7,17 @@ using TokenRateGate.Abstractions;
 namespace TokenRateGate.OpenAI;
 
 /// <summary>
-/// Extension methods for integrating OpenAI ChatClient with TokenRateGate.
-/// These methods provide a clean API for rate-limited OpenAI chat completions
-/// with automatic token estimation, reservation, and usage tracking.
+/// Internal extension methods for integrating OpenAI ChatClient with TokenRateGate.
+/// These methods are used internally by the RateLimitedChatClient wrapper and provide
+/// the core rate limiting logic for OpenAI chat completions.
 /// </summary>
-public static class TokenRateGateOpenAIExtensions
+internal static class TokenRateGateOpenAIExtensions
 {
     /// <summary>
     /// Executes an OpenAI chat completion with automatic rate limiting.
     /// This method handles the complete flow: token estimation → reservation → API call → usage tracking.
     /// </summary>
-    /// <param name="rateGate">The token rate gate instance</param>
-    /// <param name="client">The OpenAI ChatClient to use for the API call</param>
-    /// <param name="messages">The chat messages to send</param>
-    /// <param name="helper">The OpenAI chat helper configured for the specific model</param>
-    /// <param name="options">Optional chat completion options (temperature, max_tokens, etc.)</param>
-    /// <param name="logger">Optional logger for detailed operation tracking</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The chat completion response from OpenAI</returns>
-    /// <exception cref="ArgumentNullException">Thrown when any required parameter is null</exception>
-    /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled or times out waiting for capacity</exception>
-    /// <remarks>
-    /// This method performs the following steps:
-    /// 1. Estimates input and output tokens using tiktoken
-    /// 2. Reserves capacity in the rate limiter (blocks if capacity unavailable)
-    /// 3. Executes the chat completion via the provided client
-    /// 4. Extracts actual token usage from the response
-    /// 5. Records actual usage and releases the reservation
-    ///
-    /// Example usage:
-    /// <code>
-    /// var rateGate = serviceProvider.GetRequiredService&lt;ITokenRateGate&gt;();
-    /// var client = new ChatClient("gpt-4", apiKey);
-    /// var helper = new OpenAIChatHelper("gpt-4");
-    /// var messages = new List&lt;ChatMessage&gt; { new UserChatMessage("Hello!") };
-    ///
-    /// var response = await rateGate.ExecuteChatAsync(client, messages, helper);
-    /// Console.WriteLine(response.Content[0].Text);
-    /// </code>
-    /// </remarks>
-    public static async Task<ChatCompletion> ExecuteChatAsync(
+    internal static async Task<ChatCompletion> ExecuteChatAsync(
         this ITokenRateGate rateGate,
         ChatClient client,
         IEnumerable<ChatMessage> messages,
@@ -145,42 +116,7 @@ public static class TokenRateGateOpenAIExtensions
     /// Executes an OpenAI chat completion with streaming and automatic rate limiting.
     /// This method streams response chunks while handling token reservation and usage tracking.
     /// </summary>
-    /// <param name="rateGate">The token rate gate instance</param>
-    /// <param name="client">The OpenAI ChatClient to use for the API call</param>
-    /// <param name="messages">The chat messages to send</param>
-    /// <param name="helper">The OpenAI chat helper configured for the specific model</param>
-    /// <param name="options">Optional chat completion options (temperature, max_tokens, etc.)</param>
-    /// <param name="logger">Optional logger for detailed operation tracking</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>An async enumerable of streaming chat completion updates</returns>
-    /// <exception cref="ArgumentNullException">Thrown when any required parameter is null</exception>
-    /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled or times out waiting for capacity</exception>
-    /// <remarks>
-    /// This method performs the following steps:
-    /// 1. Estimates input and output tokens using tiktoken
-    /// 2. Reserves capacity in the rate limiter (blocks if capacity unavailable)
-    /// 3. Streams chat completion chunks via the provided client
-    /// 4. Extracts actual token usage from the final chunk
-    /// 5. Records actual usage and releases the reservation after streaming completes
-    ///
-    /// The reservation is held for the entire duration of streaming and is automatically
-    /// released when the stream completes, even if an error occurs or the operation is cancelled.
-    ///
-    /// Example usage:
-    /// <code>
-    /// var rateGate = serviceProvider.GetRequiredService&lt;ITokenRateGate&gt;();
-    /// var client = new ChatClient("gpt-4", apiKey);
-    /// var helper = new OpenAIChatHelper("gpt-4");
-    /// var messages = new List&lt;ChatMessage&gt; { new UserChatMessage("Hello!") };
-    ///
-    /// await foreach (var update in rateGate.ExecuteChatStreamingAsync(client, messages, helper))
-    /// {
-    ///     if (update.ContentUpdate.Count &gt; 0)
-    ///         Console.Write(update.ContentUpdate[0].Text);
-    /// }
-    /// </code>
-    /// </remarks>
-    public static async IAsyncEnumerable<StreamingChatCompletionUpdate> ExecuteChatStreamingAsync(
+    internal static async IAsyncEnumerable<StreamingChatCompletionUpdate> ExecuteChatStreamingAsync(
         this ITokenRateGate rateGate,
         ChatClient client,
         IEnumerable<ChatMessage> messages,

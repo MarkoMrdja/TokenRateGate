@@ -16,11 +16,10 @@ public class OpenAIUsageExtractor : ITokenUsageExtractor<ChatCompletion>
     /// <summary>
     /// Creates a new OpenAI usage extractor.
     /// </summary>
-    /// <param name="logger">Logger for diagnostics</param>
-    public OpenAIUsageExtractor(ILogger<OpenAIUsageExtractor> logger)
+    /// <param name="logger">Optional logger for diagnostics</param>
+    public OpenAIUsageExtractor(ILogger<OpenAIUsageExtractor>? logger = null)
     {
-        ArgumentNullException.ThrowIfNull(logger);
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<OpenAIUsageExtractor>.Instance;
     }
 
     /// <inheritdoc />

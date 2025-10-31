@@ -36,6 +36,11 @@
     <ItemGroup>
         <ProjectReference Include="../TokenRateGate.Abstractions/TokenRateGate.Abstractions.csproj" />
         <ProjectReference Include="../TokenRateGate.Core/TokenRateGate.Core.csproj" />
+        <ProjectReference Include="../TokenRateGate.Extensions.DependencyInjection/TokenRateGate.Extensions.DependencyInjection.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="TokenRateGate.OpenAI.Tests" />
     </ItemGroup>
 
 </Project>
