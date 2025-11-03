@@ -37,7 +37,8 @@ class Program
         Console.WriteLine("=== TokenRateGate + OpenAI Integration Sample ===\n");
 
         // Try to get API key from multiple sources (environment variable takes precedence)
-        var apiKey = configuration["OpenAI:ApiKey"];
+        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+                  ?? configuration["OpenAI:ApiKey"];
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -184,8 +185,8 @@ class Program
         Console.WriteLine("Console.WriteLine($\"Tokens Used: {stats.CurrentUsage}\");");
         Console.WriteLine("Console.WriteLine($\"Token Limit: {stats.TokenLimit}\");");
         Console.WriteLine("Console.WriteLine($\"Available: {stats.AvailableTokens}\");");
-        Console.WriteLine("Console.WriteLine($\"Reserved: {stats.ActiveReservations}\");");
-        Console.WriteLine("Console.WriteLine($\"Waiting Requests: {stats.WaitingRequests}\");");
+        Console.WriteLine("Console.WriteLine($\"Reserved: {stats.ActiveReservationsCount}\");");
+        Console.WriteLine("Console.WriteLine($\"Waiting Requests: {stats.WaitingRequestsCount}\");");
         Console.WriteLine();
         Console.WriteLine("// Usage percentage:");
         Console.WriteLine("var usagePercent = (double)stats.CurrentUsage / stats.TokenLimit * 100;");
@@ -382,7 +383,7 @@ class Program
             Console.WriteLine($"Request {i} - Before:");
             Console.WriteLine($"  Tokens: {statsBefore.CurrentUsage}/{statsBefore.TokenLimit}");
             Console.WriteLine($"  Usage: {(double)statsBefore.CurrentUsage / statsBefore.TokenLimit * 100:F1}%");
-            Console.WriteLine($"  Available: {statsBefore.AvailableCapacity}");
+            Console.WriteLine($"  Available: {statsBefore.AvailableTokens}");
 
             try
             {

@@ -49,15 +49,15 @@ class Program
         logger.LogInformation("=== Azure OpenAI Basic Usage Sample ===\n");
 
         // Read configuration (environment variables take precedence)
-        var endpoint = configuration["AZURE_OPENAI_ENDPOINT"]
+        var endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
             ?? configuration["AzureOpenAI:Endpoint"]
             ?? "https://YOUR-RESOURCE-NAME.openai.azure.com/";
-        var apiKey = configuration["AZURE_OPENAI_API_KEY"]
+        var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY")
             ?? configuration["AzureOpenAI:ApiKey"];
-        var deploymentName = configuration["AZURE_OPENAI_DEPLOYMENT"]
+        var deploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT")
             ?? configuration["AzureOpenAI:DeploymentName"]
             ?? "gpt-4";
-        var modelName = configuration["AZURE_OPENAI_MODEL"]
+        var modelName = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL")
             ?? configuration["AzureOpenAI:ModelName"]
             ?? "gpt-4"; // The underlying model for token counting
 
@@ -167,7 +167,7 @@ class Program
             logger.LogInformation("Usage Statistics:");
             logger.LogInformation("  Current Usage: {CurrentUsage} tokens", stats.CurrentUsage);
             logger.LogInformation("  Reserved Tokens: {ReservedTokens}", stats.TotalReserved);
-            logger.LogInformation("  Available Capacity: {AvailableCapacity} tokens", stats.AvailableCapacity);
+            logger.LogInformation("  Available Capacity: {AvailableTokens} tokens", stats.AvailableTokens);
             logger.LogInformation("  Usage Percentage: {UsagePercentage:F1}%", stats.UsagePercentage);
             logger.LogInformation("  Active Reservations: {ActiveReservations}", stats.ActiveReservationsCount);
 

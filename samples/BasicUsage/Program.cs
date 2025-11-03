@@ -271,10 +271,11 @@ class Program
         // Make some requests
         Console.WriteLine("\nMaking 3 requests...");
 
-        await using (var r1 = await rateGate.ReserveTokensAsync(6_000, 4_000))
-        await using (var r2 = await rateGate.ReserveTokensAsync(9_000, 6_000))
-        await using (var r3 = await rateGate.ReserveTokensAsync(5_000, 3_000))
         {
+            await using var r1 = await rateGate.ReserveTokensAsync(6_000, 4_000);
+            await using var r2 = await rateGate.ReserveTokensAsync(9_000, 6_000);
+            await using var r3 = await rateGate.ReserveTokensAsync(5_000, 3_000);
+
             stats = rateGate.GetUsageStats();
             Console.WriteLine("\nWith 3 active reservations:");
             PrintStats(stats);
@@ -301,7 +302,7 @@ class Program
     {
         Console.WriteLine($"  Current usage: {stats.CurrentUsage:N0} / {stats.EffectiveCapacity:N0} tokens");
         Console.WriteLine($"  Reserved: {stats.TotalReserved:N0} tokens");
-        Console.WriteLine($"  Available: {stats.AvailableCapacity:N0} tokens");
+        Console.WriteLine($"  Available: {stats.AvailableTokens:N0} tokens");
         Console.WriteLine($"  Usage: {stats.UsagePercentage:F1}%");
         Console.WriteLine($"  Active reservations: {stats.ActiveReservationsCount}");
         Console.WriteLine($"  Waiting requests: {stats.WaitingRequestsCount}");
