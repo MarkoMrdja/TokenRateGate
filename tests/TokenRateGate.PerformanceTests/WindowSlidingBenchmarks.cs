@@ -129,7 +129,7 @@ public class WindowSlidingBenchmarks
 
             // Sample stats while reservation is active
             var stats = _gate!.GetUsageStats();
-            statsSamples.Add((stats.CurrentUsage, stats.TotalReserved, stats.AvailableCapacity));
+            statsSamples.Add((stats.CurrentUsage, stats.TotalReserved, stats.AvailableTokens));
 
             await Task.Delay(WindowSeconds * 1000 / iterations); // Spread across window
 

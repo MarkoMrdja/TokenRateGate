@@ -115,7 +115,7 @@ public class StatisticsAccuracyTests : IDisposable
     }
 
     [Fact]
-    public async Task AvailableCapacity_ShouldBeAccurate()
+    public async Task AvailableTokens_ShouldBeAccurate()
     {
         // Arrange: Use smaller amounts that fit within safety buffer
         const int usedTokens = 10_000;
@@ -148,10 +148,10 @@ public class StatisticsAccuracyTests : IDisposable
 
         // Assert: Available capacity should be accurate (within reasonable tolerance)
         var tolerance = Math.Max(2000, expectedAvailable * 0.05); // 5% tolerance
-        stats.AvailableCapacity.Should().BeCloseTo(expectedAvailable, (ulong)tolerance,
+        stats.AvailableTokens.Should().BeCloseTo(expectedAvailable, (ulong)tolerance,
             "Available capacity should accurately reflect limit - usage - reserved - buffer");
 
-        stats.AvailableCapacity.Should().BeGreaterThan(0,
+        stats.AvailableTokens.Should().BeGreaterThan(0,
             "Should still have available capacity");
 
         // Cleanup
@@ -209,13 +209,13 @@ public class StatisticsAccuracyTests : IDisposable
 
             // Sample stats with active reservation
             var stats1 = _gate.GetUsageStats();
-            statsSamples.Add((stats1.CurrentUsage, stats1.TotalReserved, stats1.AvailableCapacity));
+            statsSamples.Add((stats1.CurrentUsage, stats1.TotalReserved, stats1.AvailableTokens));
 
             reservation.RecordActualUsage(1000, 1000);
 
             // Sample stats after recording usage
             var stats2 = _gate.GetUsageStats();
-            statsSamples.Add((stats2.CurrentUsage, stats2.TotalReserved, stats2.AvailableCapacity));
+            statsSamples.Add((stats2.CurrentUsage, stats2.TotalReserved, stats2.AvailableTokens));
         }
 
         // Assert: Stats should show progression

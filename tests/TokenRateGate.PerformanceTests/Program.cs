@@ -6,6 +6,7 @@ public class Program
 {
     public static void Main(string[] args)
     {
-        var summary = BenchmarkRunner.Run<ThroughputBenchmarks>();
+        // Use BenchmarkSwitcher to allow running all benchmarks or selecting specific ones
+        BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }

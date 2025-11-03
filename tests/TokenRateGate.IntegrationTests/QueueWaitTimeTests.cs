@@ -52,7 +52,7 @@ public class QueueWaitTimeTests : IDisposable
 
         // Verify capacity is nearly full
         var stats = _gate.GetUsageStats();
-        stats.AvailableCapacity.Should().BeLessThan(2000);
+        stats.AvailableTokens.Should().BeLessThan(2000);
 
         // Act: Start a queued request
         var sw = Stopwatch.StartNew();

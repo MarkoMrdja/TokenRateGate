@@ -126,11 +126,11 @@ public class BaselineFunctionalityTests
         // Assert
         stats.TokenLimit.Should().Be(10_000);
         stats.EffectiveCapacity.Should().Be(9_000); // 10,000 - 10% = 9,000
-        stats.AvailableCapacity.Should().Be(9_000); // Nothing reserved or used yet
+        stats.AvailableTokens.Should().Be(9_000); // Nothing reserved or used yet
     }
 
     [Fact]
-    public void GetUsageStats_AvailableCapacity_ShouldDecrease_WithActiveReservations()
+    public void GetUsageStats_AvailableTokens_ShouldDecrease_WithActiveReservations()
     {
         // Arrange
         var options = new TokenRateGateOptions
@@ -148,7 +148,7 @@ public class BaselineFunctionalityTests
         // Assert
         stats.EffectiveCapacity.Should().Be(9_000);
         stats.TotalReserved.Should().Be(5_000);
-        stats.AvailableCapacity.Should().Be(4_000); // 9000 - 5000 = 4000
+        stats.AvailableTokens.Should().Be(4_000); // 9000 - 5000 = 4000
         stats.ActiveReservationsCount.Should().Be(1);
 
         // Cleanup
@@ -177,7 +177,7 @@ public class BaselineFunctionalityTests
         var stats = gate.GetUsageStats();
         stats.TotalReserved.Should().Be(4500); // 1500 + 2000 + 1000
         stats.ActiveReservationsCount.Should().Be(3);
-        stats.AvailableCapacity.Should().Be(5500); // 10000 - 4500
+        stats.AvailableTokens.Should().Be(5500); // 10000 - 4500
         stats.UsagePercentage.Should().BeApproximately(45.0, 0.1);
     }
 
@@ -189,7 +189,7 @@ public class BaselineFunctionalityTests
         {
             TokenLimit = 5_000,
             WindowSeconds = 5,
-            MaxConcurrentRequests = 1,
+            MaxConcurrentRequests = 10, // Allow multiple concurrent requests so second request can reach waiting queue
             SafetyBufferPercentage = 0.0,
             MaxWaitTime = TimeSpan.FromSeconds(10)
         };
@@ -199,7 +199,7 @@ public class BaselineFunctionalityTests
         await using var r1 = await gate.ReserveTokensAsync(2000, 2000); // 4000 tokens
 
         var stats1 = gate.GetUsageStats();
-        stats1.AvailableCapacity.Should().Be(1000); // 5000 - 4000
+        stats1.AvailableTokens.Should().Be(1000); // 5000 - 4000
 
         // This should queue because only 1000 tokens available but needs 2000
         var startTime = DateTime.UtcNow;
@@ -245,7 +245,7 @@ public class BaselineFunctionalityTests
 
         // Assert
         statsWithReservation.TotalReserved.Should().Be(5000);
-        statsWithReservation.AvailableCapacity.Should().Be(5000);
+        statsWithReservation.AvailableTokens.Should().Be(5000);
 
         statsAfterRelease.TotalReserved.Should().Be(0);
         statsAfterRelease.ActiveReservationsCount.Should().Be(0);

@@ -217,7 +217,7 @@ public class ConcurrentRequestTests : IDisposable
 
                         // Query stats while holding reservation
                         var stats = _gate.GetUsageStats();
-                        _ = stats.AvailableCapacity;
+                        _ = stats.AvailableTokens;
 
                         reservation.RecordActualUsage(100, 100);
                     }

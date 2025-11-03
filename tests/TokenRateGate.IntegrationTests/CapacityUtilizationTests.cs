@@ -105,7 +105,7 @@ public class CapacityUtilizationTests : IDisposable
         stats.TotalReserved.Should().BeGreaterThanOrEqualTo(75_000,
             "Should have significant capacity reserved");
 
-        stats.AvailableCapacity.Should().BeLessThan(21_000,
+        stats.AvailableTokens.Should().BeLessThan(21_000,
             "Available capacity should be limited when many reservations are active");
 
         stats.IsNearCapacity.Should().BeTrue(
