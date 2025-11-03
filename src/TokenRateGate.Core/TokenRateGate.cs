@@ -9,6 +9,42 @@ using TokenRateGate.Core.Utils;
 
 namespace TokenRateGate.Core;
 
+/// <summary>
+/// Controls token-based rate limiting for LLM API requests.
+/// Manages token reservations, queuing, and actual usage tracking to prevent exceeding API provider limits.
+/// </summary>
+/// <remarks>
+/// TokenRateGate prevents exceeding both tokens-per-minute (TPM) and requests-per-minute (RPM) limits
+/// by managing a sliding window of token usage. It queues requests when capacity is exhausted and
+/// automatically processes them as capacity becomes available.
+///
+/// Key features:
+/// - Sliding window rate limiting for accurate capacity tracking
+/// - Automatic request queuing when limits are reached
+/// - Supports both token and request rate limits
+/// - Thread-safe for concurrent operations
+/// - Configurable safety buffers and concurrency limits
+/// </remarks>
+/// <example>
+/// <code>
+/// var options = new TokenRateGateOptions
+/// {
+///     TokenLimit = 100_000, // 100K tokens per minute
+///     WindowSeconds = 60,
+///     MaxConcurrentRequests = 50
+/// };
+///
+/// using var gate = new TokenRateGate(options, logger);
+/// var reservation = await gate.ReserveTokensAsync(inputTokens: 500, estimatedOutputTokens: 1500);
+/// await using var _ = reservation;
+///
+/// // Make your API call here
+/// var response = await callLlmApi();
+///
+/// // Record actual usage for accurate tracking
+/// reservation.RecordActualUsage(response.InputTokens, response.OutputTokens);
+/// </code>
+/// </example>
 public class TokenRateGate : ITokenRateGate, IDisposable
 {
     // ============================================================================
@@ -152,7 +188,34 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // MAIN IMPLEMENTATION
     // ============================================================================
 
-    public async Task<TokenReservation> ReserveTokensAsync(int inputTokens, int estimatedOutputTokens = 0, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Reserves capacity for a token-consuming operation, waiting if necessary until capacity is available.
+    /// </summary>
+    /// <param name="inputTokens">The number of input tokens that will be consumed.</param>
+    /// <param name="estimatedOutputTokens">
+    /// Estimated output tokens for the operation. If not provided, will be calculated based on
+    /// <see cref="TokenRateGateOptions.OutputEstimationStrategy"/>.
+    /// </param>
+    /// <param name="cancellationToken">Optional cancellation token to cancel the reservation attempt.</param>
+    /// <returns>
+    /// A <see cref="TokenReservation"/> that must be disposed after the operation completes.
+    /// Call <see cref="TokenReservation.RecordActualUsage"/> with actual token counts for accurate tracking.
+    /// </returns>
+    /// <exception cref="ObjectDisposedException">Thrown if the TokenRateGate has been disposed.</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown if inputTokens is not positive, estimatedOutputTokens is negative,
+    /// or the total requested tokens exceeds the effective capacity.
+    /// </exception>
+    /// <exception cref="OperationCanceledException">
+    /// Thrown if the operation is cancelled via the cancellationToken or exceeds <see cref="TokenRateGateOptions.MaxWaitTime"/>.
+    /// </exception>
+    /// <remarks>
+    /// This method may queue the request if capacity is currently exhausted. The request will automatically
+    /// proceed once capacity becomes available within the configured <see cref="TokenRateGateOptions.MaxWaitTime"/>.
+    /// Always call <see cref="TokenReservation.RecordActualUsage"/> after your API call completes to ensure
+    /// accurate capacity tracking.
+    /// </remarks>
+    public async Task<TokenReservation> ReserveTokensAsync(int inputTokens, int? estimatedOutputTokens = null, CancellationToken cancellationToken = default)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(TokenRateGate));
@@ -160,7 +223,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         if (inputTokens <= 0)
             throw new ArgumentException("Input tokens must be positive", nameof(inputTokens));
 
-        if (estimatedOutputTokens < 0)
+        if (estimatedOutputTokens.HasValue && estimatedOutputTokens.Value < 0)
             throw new ArgumentException("Estimated output tokens cannot be negative", nameof(estimatedOutputTokens));
 
         int totalEstimatedTokens = CalculateEstimatedTotalTokens(inputTokens, estimatedOutputTokens);
@@ -172,10 +235,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         int effectiveLimit = _options.TokenLimit - _safetyBuffer;
         if (totalEstimatedTokens > effectiveLimit)
         {
-            throw new ArgumentException(
+            throw new InvalidOperationException(
                 $"Requested tokens ({totalEstimatedTokens:N0}) exceeds effective capacity ({effectiveLimit:N0}). " +
                 $"Token limit: {_options.TokenLimit:N0}, Safety buffer: {_safetyBuffer:N0} ({_options.SafetyBufferPercentage:P0}). " +
-                $"This request can never be fulfilled.", nameof(inputTokens));
+                $"This request can never be fulfilled with current configuration. Either reduce the request size or increase TokenLimit.");
         }
 
         // Start timing from the very beginning of the reservation attempt
@@ -259,8 +322,8 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     {
                         lock (_lock)
                         {
-                            // Only cancel if still in queue (node not null and not already granted)
-                            if (waitingRequest.Node != null && _waitingRequests.Contains(waitingRequest.Node.Value))
+                            // Only cancel if still in queue (node not null and still belongs to this list)
+                            if (waitingRequest.Node != null && waitingRequest.Node.List == _waitingRequests)
                             {
                                 _waitingRequests.Remove(waitingRequest.Node);
                                 waitingRequest.Node = null;
@@ -287,6 +350,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
                     var reservationId = await waitingRequest.TaskCompletionSource.Task;
 
+                    // Transfer semaphore ownership immediately after grant to prevent double-release race condition
+                    // If an exception occurs after this point, TokenReservation will handle the release
+                    semaphoreAcquired = false; // Ownership transferred to TokenReservation
+
                     var totalWaitTime = DateTime.UtcNow - reservationStartTime;
                     _logger.LogDebug(
                         "Granted queued reservation: {TotalTokens} tokens with ID {ReservationId} after waiting {WaitTime:mm\\:ss}",
@@ -295,9 +362,6 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     // Record successful grant after queue wait and wait time
                     _metrics?.RecordReservationGranted();
                     _metrics?.RecordWaitTime(totalWaitTime);
-
-                    // Keep semaphore acquired - it will be released when reservation is disposed
-                    semaphoreAcquired = false; // Ownership transferred to TokenReservation
 
                     return new TokenReservation(reservationId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
                 }
@@ -337,22 +401,15 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         }
     }
 
-    private int CalculateEstimatedTotalTokens(int inputTokens, int estimatedOutputTokens)
+    private int CalculateEstimatedTotalTokens(int inputTokens, int? estimatedOutputTokens)
     {
         long total;
 
         // If user explicitly provided estimatedOutputTokens (including 0), use it directly
-        // Estimation strategies are only used when estimatedOutputTokens is provided as the default (0)
-        // and the caller intends to use estimation. For explicit 0 (no output tokens), we honor that.
-        // To distinguish: if someone wants estimation, they should not pass estimatedOutputTokens parameter
-        // Since we can't distinguish "not passed" from "passed 0" with current signature,
-        // we treat any explicit value >= 0 as intentional, only using strategy for very specific cases
-        //
-        // UPDATE: Simpler approach - always use explicit estimatedOutputTokens if >= 0
-        // The estimation strategy documentation should clarify it's for when you don't know output size
-        if (estimatedOutputTokens >= 0)
+        // Otherwise, apply the configured estimation strategy
+        if (estimatedOutputTokens.HasValue)
         {
-            total = (long)inputTokens + estimatedOutputTokens;
+            total = (long)inputTokens + estimatedOutputTokens.Value;
         }
         else if (_options.OutputEstimationStrategy == OutputEstimationStrategy.FixedMultiplier)
         {
@@ -363,7 +420,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         {
             total = (long)inputTokens + _options.DefaultOutputTokens;
         }
-        else
+        else // Conservative strategy
         {
             total = (long)inputTokens * 2;
         }
@@ -426,12 +483,13 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         // Cleanup is fast (O(k) where k = expired items) and lock is already held
 
         bool tokensFreed = CleanupTokenTimeline(now);
-        CleanupRequestTimeline(now);
+        bool requestsFreed = CleanupRequestTimeline(now);
         CleanupStaleReservations(now);
 
         _lastCleanup = now;
 
-        if (tokensFreed && _waitingRequests.Count > 0)
+        // Process waiting queue if either token capacity or request capacity was freed
+        if ((tokensFreed || requestsFreed) && _waitingRequests.Count > 0)
             TryProcessingWaitingRequests();
     }
 
@@ -464,16 +522,29 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         return false;
     }
 
-    private void CleanupRequestTimeline(DateTime now)
+    private bool CleanupRequestTimeline(DateTime now)
     {
-        var requestHistoryWindow = TimeSpan.FromSeconds(
-            Math.Max(MinRequestHistoryWindowSeconds, _options.WindowSeconds * RequestHistoryWindowMultiplier));
-        var cutoff = now.Subtract(requestHistoryWindow);
+        // Use the configured RequestWindowSeconds for RPM limiting
+        // This is the actual sliding window for request-per-minute tracking
+        var cutoff = now.AddSeconds(-_options.RequestWindowSeconds);
 
+        int removedRequests = 0;
         while (_requestTimeline.Count > 0 && _requestTimeline.Peek() < cutoff)
         {
             _requestTimeline.Dequeue();
+            removedRequests++;
         }
+
+        if (removedRequests > 0)
+        {
+            // Reset insufficient capacity flag since request capacity was freed
+            _hasInsufficientCapacity = false;
+
+            _logger.LogDebug("Cleaned up {RemovedRequests} expired request timestamps", removedRequests);
+            return true;
+        }
+
+        return false;
     }
 
     private void CleanupStaleReservations(DateTime now)
@@ -574,8 +645,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         bool hasWaitingRequests =  _waitingRequests.Count > 0;
         bool hasActiveReservations = _activeReservations.Count > 0;
 
-        // Only run timer when we have waiting requests but no active work - deadlock scenario
-        bool shouldRunTimer = hasWaitingRequests && !hasActiveReservations;
+        // Run timer when we have waiting requests - handles two scenarios:
+        // 1. No active work (deadlock detection - all requests done but timestamps haven't expired)
+        // 2. Active work exists but RPM limit blocks new requests (timestamps need to expire)
+        bool shouldRunTimer = hasWaitingRequests;
 
         if (shouldRunTimer)
         {
@@ -602,16 +675,19 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         {
             lock (_lock)
             {
-                if (_waitingRequests.Count > 0 && _activeReservations.Count == 0)
+                if (_waitingRequests.Count > 0)
                 {
-                    // Always cleanup to free expired tokens (throttling removed for performance)
+                    // Always cleanup to free expired tokens/requests (throttling removed for performance)
+                    // This handles two scenarios:
+                    // 1. No active reservations: deadlock detection (all work done but timestamps haven't expired)
+                    // 2. Active reservations exist: RPM limit blocking (request timestamps need to expire)
                     CleanupExpiredRecords(forceCleanup: true);
 
                     // Only log if we're going to try processing (avoid log spam)
                     if (!_hasInsufficientCapacity)
                     {
-                        _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests",
-                            _waitingRequests.Count);
+                        _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests (active: {ActiveCount})",
+                            _waitingRequests.Count, _activeReservations.Count);
                     }
                 }
 
@@ -619,7 +695,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             }
 
             // Only try processing queue if we haven't already determined there's no capacity
-            // The flag will be reset when cleanup frees tokens, allowing processing to resume
+            // The flag will be reset when cleanup frees tokens or requests, allowing processing to resume
             if (!_disposed && _waitingRequests.Count > 0 && !_hasInsufficientCapacity)
             {
                 TryProcessingWaitingRequests();
@@ -635,10 +711,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     {
         long currentUsage = GetCurrentUsageInternal();
         long effectiveLimit = _options.TokenLimit - _safetyBuffer;
-        
+
         bool hasTokenCapacity = currentUsage + requiredTokens <= effectiveLimit;
         bool hasRequestCapacity = GetCurrentRequestCount() < _options.MaxRequestsPerMinute;
-        
+
         return hasTokenCapacity && hasRequestCapacity;
     }
 
@@ -723,6 +799,17 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         }
     }
 
+    /// <summary>
+    /// Retrieves current usage statistics for monitoring and capacity planning.
+    /// </summary>
+    /// <returns>
+    /// A <see cref="TokenUsageStats"/> instance containing current usage, available capacity,
+    /// active reservations, waiting requests, and other metrics.
+    /// </returns>
+    /// <remarks>
+    /// This method is thread-safe and provides a point-in-time snapshot of the system state.
+    /// Use this for monitoring dashboards, logging, or dynamic capacity planning.
+    /// </remarks>
     public TokenUsageStats GetUsageStats()
     {
         lock (_lock)
@@ -818,11 +905,19 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             .Sum(r => (long)r.EstimatedTokens);
     }
 
-    private int GetCurrentRequestCount()
+    /// <summary>
+    /// Gets the current number of requests in the RPM tracking window.
+    /// </summary>
+    /// <returns>The count of requests (both active and completed) within the RPM window.</returns>
+    /// <remarks>
+    /// This method returns the count of all requests that fall within the configured RequestWindowSeconds,
+    /// including both active reservations and completed requests that haven't yet expired from the timeline.
+    /// This is useful for monitoring how close you are to hitting the MaxRequestsPerMinute limit.
+    /// Since CleanupRequestTimeline removes old entries regularly, we can use the direct count for performance.
+    /// This is O(1) instead of O(n). The cleanup ensures the queue contains mostly recent requests.
+    /// </remarks>
+    public int GetCurrentRequestCount()
     {
-        // Since CleanupRequestTimeline removes old entries regularly (every 3 seconds),
-        // we can use the direct count for performance. This is O(1) instead of O(n).
-        // The cleanup ensures the queue contains mostly recent requests.
         return _requestTimeline.Count;
     }
 
@@ -874,6 +969,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         if (_options.MaxRequestsPerMinute <= 0)
             throw new ArgumentException("MaxRequestsPerMinute must be positive");
+
+        if (_options.RequestWindowSeconds <= 0)
+            throw new ArgumentException("RequestWindowSeconds must be positive");
 
         if (_options.MaxWaitTime.HasValue)
         {

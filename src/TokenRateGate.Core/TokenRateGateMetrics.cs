@@ -134,7 +134,7 @@ internal sealed class TokenRateGateMetrics : IDisposable
     private int GetTokensAvailable()
     {
         var stats = _rateGate.GetUsageStats();
-        return (int)stats.AvailableCapacity;
+        return (int)stats.AvailableTokens;
     }
 
     private int GetActiveReservationsCount()

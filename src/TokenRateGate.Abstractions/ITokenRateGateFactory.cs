@@ -98,7 +98,7 @@ public interface ITokenUsageStats
     /// <summary>
     /// The number of tokens available for new reservations.
     /// </summary>
-    long AvailableCapacity { get; }
+    long AvailableTokens { get; }
 
     /// <summary>
     /// The effective capacity after applying safety buffer (TokenLimit - SafetyBuffer).

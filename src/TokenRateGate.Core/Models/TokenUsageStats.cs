@@ -14,7 +14,7 @@ public class TokenUsageStats : ITokenUsageStats
     public TokenUsageStats(
         long currentUsage,
         long totalReserved,
-        long availableCapacity,
+        long availableTokens,
         long effectiveCapacity,
         long tokenLimit,
         int activeReservationsCount,
@@ -23,7 +23,7 @@ public class TokenUsageStats : ITokenUsageStats
     {
         CurrentUsage = currentUsage;
         TotalReserved = totalReserved;
-        AvailableCapacity = availableCapacity;
+        AvailableTokens = availableTokens;
         EffectiveCapacity = effectiveCapacity;
         TokenLimit = tokenLimit;
         ActiveReservationsCount = activeReservationsCount;
@@ -44,7 +44,7 @@ public class TokenUsageStats : ITokenUsageStats
     /// <summary>
     /// The number of tokens available for new reservations.
     /// </summary>
-    public long AvailableCapacity { get; }
+    public long AvailableTokens { get; }
 
     /// <summary>
     /// The effective capacity after applying safety buffer (TokenLimit - SafetyBuffer).

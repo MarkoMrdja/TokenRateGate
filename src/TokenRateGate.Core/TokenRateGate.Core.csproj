@@ -15,4 +15,10 @@
     <ProjectReference Include="..\TokenRateGate.Abstractions\TokenRateGate.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="TokenRateGate.Core.Tests" />
+    <InternalsVisibleTo Include="TokenRateGate.OpenAI.Tests" />
+    <InternalsVisibleTo Include="TokenRateGate.IntegrationTests" />
+  </ItemGroup>
+
 </Project>
