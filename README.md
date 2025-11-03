@@ -318,7 +318,7 @@ public class MonitoringService
 
         Console.WriteLine($"Current Usage: {stats.CurrentUsage}/{stats.EffectiveCapacity} tokens");
         Console.WriteLine($"Reserved: {stats.ReservedTokens} tokens");
-        Console.WriteLine($"Available: {stats.AvailableCapacity} tokens");
+        Console.WriteLine($"Available: {stats.AvailableTokens} tokens");
         Console.WriteLine($"Usage: {stats.UsagePercentage:F1}%");
         Console.WriteLine($"Near Capacity: {stats.IsNearCapacity}");
     }
@@ -331,7 +331,7 @@ public class MonitoringService
 |--------|---------|-------------|
 | `TokenLimit` | 500000 | Maximum tokens per window |
 | `WindowSeconds` | 60 | Time window in seconds |
-| `SafetyBuffer` | 1000 | Reserve tokens to avoid hitting exact limits |
+| `SafetyBufferPercentage` | 0.05 (5%) | Percentage of TokenLimit reserved as safety buffer |
 | `MaxConcurrentRequests` | 1000 | Maximum concurrent API requests |
 | `MaxRequestsPerMinute` | int.MaxValue | RPM limit (in addition to token limit) |
 | `MaxWaitTime` | 2 minutes | Maximum time to wait when queued |
