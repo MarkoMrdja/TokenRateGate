@@ -55,7 +55,7 @@ public class TokenRateGateHealthCheck : IHealthCheck
             {
                 ["currentUsage"] = stats.CurrentUsage,
                 ["reservedTokens"] = stats.TotalReserved,
-                ["availableTokens"] = stats.AvailableCapacity,
+                ["availableTokens"] = stats.AvailableTokens,
                 ["activeReservations"] = stats.ActiveReservationsCount,
                 ["waitingRequests"] = stats.WaitingRequestsCount,
                 ["usagePercentage"] = stats.UsagePercentage

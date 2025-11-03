@@ -85,8 +85,8 @@ public static class TokenRateGateExtensions
             throw new ArgumentNullException(nameof(rateGate));
 
         var stats = rateGate.GetUsageStats();
-        var totalCapacity = stats.CurrentUsage + stats.AvailableCapacity;
-        return totalCapacity > 0 ? (double)stats.AvailableCapacity / totalCapacity * 100.0 : 100.0;
+        var totalCapacity = stats.CurrentUsage + stats.AvailableTokens;
+        return totalCapacity > 0 ? (double)stats.AvailableTokens / totalCapacity * 100.0 : 100.0;
     }
 
     /// <summary>
