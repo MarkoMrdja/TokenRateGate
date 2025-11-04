@@ -23,7 +23,7 @@ public class ServiceCollectionExtensionsTests
         var configured = false;
 
         // Act
-        var builder = services.AddTokenRateGate(options =>
+        var result = services.AddTokenRateGate(options =>
         {
             options.TokenLimit = 50000;
             options.WindowSeconds = 60;
@@ -31,8 +31,8 @@ public class ServiceCollectionExtensionsTests
         });
 
         // Assert
-        builder.Should().NotBeNull();
-        builder.Services.Should().BeSameAs(services);
+        result.Should().NotBeNull();
+        result.Should().BeSameAs(services);
 
         var provider = services.BuildServiceProvider();
 
@@ -191,20 +191,19 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void AddTokenRateGate_ReturnsBuilder_AllowsChainingIntegrations()
+    public void AddTokenRateGate_ReturnsServiceCollection_AllowsChaining()
     {
         // Arrange
         var services = new ServiceCollection();
 
         // Act
-        var builder = services.AddTokenRateGate(options =>
+        var result = services.AddTokenRateGate(options =>
         {
             options.TokenLimit = 50000;
         });
 
         // Assert
-        builder.Should().NotBeNull();
-        builder.Should().BeAssignableTo<ITokenRateGateBuilder>();
-        builder.Services.Should().BeSameAs(services);
+        result.Should().NotBeNull();
+        result.Should().BeSameAs(services);
     }
 }

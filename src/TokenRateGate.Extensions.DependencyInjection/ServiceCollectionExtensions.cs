@@ -13,12 +13,11 @@ public static class ServiceCollectionExtensions
 {
     /// <summary>
     /// Adds TokenRateGate services to the service collection with the specified options.
-    /// Returns a builder for configuring additional integrations (OpenAI, Azure, etc.).
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="configureOptions">Action to configure TokenRateGate options</param>
-    /// <returns>A builder for configuring TokenRateGate integrations</returns>
-    public static ITokenRateGateBuilder AddTokenRateGate(
+    /// <returns>The service collection for chaining</returns>
+    public static IServiceCollection AddTokenRateGate(
         this IServiceCollection services,
         Action<TokenRateGateOptions> configureOptions)
     {
@@ -32,16 +31,15 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<Core.TokenRateGate>();
         services.TryAddSingleton<TokenRateGate.Abstractions.ITokenRateGate>(sp => sp.GetRequiredService<Core.TokenRateGate>());
 
-        return new TokenRateGateBuilder(services);
+        return services;
     }
 
     /// <summary>
     /// Adds TokenRateGate services to the service collection with default options.
-    /// Returns a builder for configuring additional integrations (OpenAI, Azure, etc.).
     /// </summary>
     /// <param name="services">The service collection</param>
-    /// <returns>A builder for configuring TokenRateGate integrations</returns>
-    public static ITokenRateGateBuilder AddTokenRateGate(this IServiceCollection services)
+    /// <returns>The service collection for chaining</returns>
+    public static IServiceCollection AddTokenRateGate(this IServiceCollection services)
     {
         if (services == null)
             throw new ArgumentNullException(nameof(services));
@@ -49,18 +47,17 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<Core.TokenRateGate>();
         services.TryAddSingleton<TokenRateGate.Abstractions.ITokenRateGate>(sp => sp.GetRequiredService<Core.TokenRateGate>());
 
-        return new TokenRateGateBuilder(services);
+        return services;
     }
 
     /// <summary>
     /// Adds TokenRateGate services to the service collection using configuration binding.
     /// Binds from the "TokenRateGate" configuration section by default.
-    /// Returns a builder for configuring additional integrations (OpenAI, Azure, etc.).
     /// </summary>
     /// <param name="services">The service collection</param>
     /// <param name="configuration">The configuration section containing TokenRateGate options</param>
-    /// <returns>A builder for configuring TokenRateGate integrations</returns>
-    public static ITokenRateGateBuilder AddTokenRateGate(
+    /// <returns>The service collection for chaining</returns>
+    public static IServiceCollection AddTokenRateGate(
         this IServiceCollection services,
         IConfiguration configuration)
     {
@@ -88,7 +85,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<Core.TokenRateGate>();
         services.TryAddSingleton<TokenRateGate.Abstractions.ITokenRateGate>(sp => sp.GetRequiredService<Core.TokenRateGate>());
 
-        return new TokenRateGateBuilder(services);
+        return services;
     }
 
     /// <summary>
