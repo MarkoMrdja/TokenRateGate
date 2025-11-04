@@ -84,9 +84,13 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private DateTime _lastCleanup = DateTime.MinValue;
 
-    // Flag to avoid wasteful queue processing when capacity is known to be insufficient
-    // Reset when tokens are freed during cleanup
-    private bool _hasInsufficientCapacity = false;
+    /// <summary>
+    /// Flag to avoid wasteful queue processing when capacity is known to be insufficient.
+    /// Reset when tokens are freed during cleanup.
+    /// Marked volatile because it's written under lock but read without lock in SafetyTimerCallback.
+    /// This ensures memory visibility across threads - the timer thread always sees the latest value.
+    /// </summary>
+    private volatile bool _hasInsufficientCapacity = false;
 
     // ============================================================================
     // CONSTANTS - Internal Operation Timing
@@ -143,24 +147,8 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // ============================================================================
 
     public TokenRateGate(IOptions<TokenRateGateOptions> options, ILogger<TokenRateGate> logger)
+        : this(options?.Value ?? throw new ArgumentNullException(nameof(options)), logger)
     {
-        _options = options.Value ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-
-        ValidateOptions();
-
-        // Initialize token estimator (use provided or default to CharacterBasedTokenEstimator)
-        _tokenEstimator = _options.TokenEstimator ?? new CharacterBasedTokenEstimator();
-
-        // Calculate safety buffer from percentage
-        _safetyBuffer = (int)(_options.TokenLimit * _options.SafetyBufferPercentage);
-
-        _concurrencyLimiter = new SemaphoreSlim(_options.MaxConcurrentRequests, _options.MaxConcurrentRequests);
-
-        _safetyTimer = new Timer(SafetyTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
-
-        // Initialize metrics if OpenTelemetry is enabled
-        _metrics = new TokenRateGateMetrics(this);
     }
 
     public TokenRateGate(TokenRateGateOptions options, ILogger<TokenRateGate> logger)
@@ -1015,39 +1003,4 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         GC.SuppressFinalize(this);
     }
 
-    // ============================================================================
-    // SUPPORTING TYPES
-    // ============================================================================
-
-    private record TokenUsageEntry(DateTime Timestamp, int ActualTokens, int ReservedTokens);
-    private class PendingReservations
-    {
-        public Guid Id { get; }
-        public int EstimatedTokens { get; }
-        public DateTime Timestamp { get; }
-        public int? ActualTokensUsed { get; set; }
-
-        public PendingReservations(Guid id, int estimatedTokens, DateTime timestamp)
-        {
-            Id = id;
-            EstimatedTokens = estimatedTokens;
-            Timestamp = timestamp;
-            ActualTokensUsed = null;
-        }
-    }
-    private class WaitingRequest
-    {
-        public int RequiredTokens { get; }
-        public CancellationToken CancellationToken { get; set; }
-        public TaskCompletionSource<Guid> TaskCompletionSource { get; }
-        public LinkedListNode<WaitingRequest>? Node { get; set; }
-        public Guid ReservationId { get; set; }
-
-        public WaitingRequest(int requiredTokens, CancellationToken cancellationToken)
-        {
-            RequiredTokens = requiredTokens;
-            CancellationToken = cancellationToken;
-            TaskCompletionSource = new TaskCompletionSource<Guid>();
-        }
-    }
 }
