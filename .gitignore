@@ -11,6 +11,9 @@
 *.sln.docstates
 *.env
 
+# Development settings with secrets
+**/appsettings.Development.json
+
 # Project-specific excludes
 CLAUDE.md
 MIGRATION.md
