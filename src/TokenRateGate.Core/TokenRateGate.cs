@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Options;
 using TokenRateGate.Abstractions;
 using TokenRateGate.Core.Abstractions;
+using TokenRateGate.Core.Capacity;
 using TokenRateGate.Core.Models;
 using TokenRateGate.Core.Options;
 using TokenRateGate.Core.TokenEstimation;
@@ -55,6 +56,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private readonly ILogger<TokenRateGate> _logger;
     private readonly TokenRateGateMetrics? _metrics;
     private readonly ITokenEstimator _tokenEstimator;
+    private readonly CapacityCalculator _capacityCalculator;
 
     private readonly int _safetyBuffer; // Calculated from SafetyBufferPercentage
 
@@ -163,6 +165,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         // Calculate safety buffer from percentage
         _safetyBuffer = (int)(_options.TokenLimit * _options.SafetyBufferPercentage);
+
+        // Initialize capacity calculator
+        _capacityCalculator = new CapacityCalculator(_options, _safetyBuffer);
 
         _concurrencyLimiter = new SemaphoreSlim(_options.MaxConcurrentRequests, _options.MaxConcurrentRequests);
 
@@ -698,12 +703,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private bool HasCapacityInternal(int requiredTokens)
     {
         long currentUsage = GetCurrentUsageInternal();
-        long effectiveLimit = _options.TokenLimit - _safetyBuffer;
+        int requestCount = _requestTimeline.Count;
 
-        bool hasTokenCapacity = currentUsage + requiredTokens <= effectiveLimit;
-        bool hasRequestCapacity = GetCurrentRequestCount() < _options.MaxRequestsPerMinute;
-
-        return hasTokenCapacity && hasRequestCapacity;
+        return _capacityCalculator.HasCapacity(currentUsage, requestCount, requiredTokens);
     }
 
     private void RecordActualUsageCallback(TokenReservation reservation, int actualTokensUsed)
@@ -872,25 +874,14 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private long GetCurrentUsageInternal()
     {
-        // This method is used for capacity calculations
-        // It includes: completed usage + actual usage from active + estimated from active (not yet recorded)
-        long completedUsage = _currentActualUsage;
-
-        // For each active reservation:
-        // - If actual usage recorded: use actual
-        // - If not recorded yet: use estimated
-        long activeUsage = _activeReservations.Values.Sum(r =>
-            r.ActualTokensUsed.HasValue ? (long)r.ActualTokensUsed.Value : (long)r.EstimatedTokens);
-
-        return completedUsage + activeUsage;
+        return _capacityCalculator.CalculateCurrentUsage(
+            _currentActualUsage,
+            _activeReservations.Values);
     }
 
     private long GetReservedTokensInternal()
     {
-        // Only count reservations that haven't recorded actual usage yet
-        return _activeReservations.Values
-            .Where(r => !r.ActualTokensUsed.HasValue)
-            .Sum(r => (long)r.EstimatedTokens);
+        return _capacityCalculator.CalculateReservedTokens(_activeReservations.Values);
     }
 
     /// <summary>
