@@ -8,6 +8,7 @@ using TokenRateGate.Core.Options;
 using TokenRateGate.Core.Timeline;
 using TokenRateGate.Core.TokenEstimation;
 using TokenRateGate.Core.Utils;
+using TokenRateGate.Core.Validation;
 
 namespace TokenRateGate.Core;
 
@@ -129,7 +130,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
-        ValidateOptions();
+        TokenRateGateOptionsValidator.Validate(_options, _logger);
 
         // Initialize token estimator (use provided or default to CharacterBasedTokenEstimator)
         _tokenEstimator = _options.TokenEstimator ?? new CharacterBasedTokenEstimator();
@@ -808,59 +809,6 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         return _timelineManager.CalculateAverageEstimationEfficiency();
     }
 
-    private void ValidateOptions()
-    {
-        if (_options.TokenLimit <= 0)
-            throw new ArgumentException("TokenLimit must be positive");
-        
-        if (_options.WindowSeconds <= 0)
-            throw new ArgumentException("WindowSeconds must be positive");
-
-        if (_options.SafetyBufferPercentage < 0)
-            throw new ArgumentException("SafetyBufferPercentage cannot be negative");
-
-        if (_options.SafetyBufferPercentage >= 1.0)
-            throw new ArgumentException("SafetyBufferPercentage must be less than 1.0 (100%)");
-
-        if (_options.SafetyBufferPercentage > 0.5)
-            _logger.LogWarning("SafetyBufferPercentage ({SafetyBufferPercentage:P0}) is more than 50% of TokenLimit. " +
-                               "This leaves very little usable capacity and may cause frequent queuing.",
-                _options.SafetyBufferPercentage);
-        
-        if (_options.MaxConcurrentRequests <= 0)
-            throw new ArgumentException("MaxConcurrentRequests must be positive");
-
-        if (_options.MaxConcurrentRequests > 10_000)
-            throw new ArgumentException(
-                $"MaxConcurrentRequests ({_options.MaxConcurrentRequests:N0}) exceeds safe limit (10,000). " +
-                $"This could lead to resource exhaustion. The semaphore controls both active reservations " +
-                $"and queued requests, so excessive values can cause memory exhaustion.");
-
-        if (_options.MaxRequestsPerMinute <= 0)
-            throw new ArgumentException("MaxRequestsPerMinute must be positive");
-
-        if (_options.RequestWindowSeconds <= 0)
-            throw new ArgumentException("RequestWindowSeconds must be positive");
-
-        if (_options.MaxWaitTime.HasValue)
-        {
-            if (_options.MaxWaitTime.Value <= TimeSpan.Zero)
-                throw new ArgumentException("MaxWaitTime must be positive when set", nameof(_options.MaxWaitTime));
-
-            if (_options.MaxWaitTime.Value > TimeSpan.FromHours(24))
-                throw new ArgumentException("MaxWaitTime cannot exceed 24 hours for practical use", nameof(_options.MaxWaitTime));
-        }
-        
-        if (_options.OutputMultiplier < 0)
-            throw new ArgumentException("OutputMultiplier cannot be negative");
-        
-        if (_options.DefaultOutputTokens < 0)
-            throw new ArgumentException("DefaultOutputTokens cannot be negative");
-        
-        if (_options.DefaultOutputTokens > _options.TokenLimit)
-            throw new ArgumentException($"DefaultOutputTokens ({_options.DefaultOutputTokens}) cannot exceed TokenLimit ({_options.TokenLimit})", 
-                nameof(_options.DefaultOutputTokens));
-    }
 
     public void Dispose()
     {
