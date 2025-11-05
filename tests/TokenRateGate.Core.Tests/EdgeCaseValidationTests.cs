@@ -221,8 +221,8 @@ public class EdgeCaseValidationTests
             async () => await gate.ReserveTokensAsync(6000, 4000)); // 10,000 > 9,000
 
         exception.Message.Should().Contain("exceeds effective capacity");
-        exception.Message.Should().Contain("10,000");
-        exception.Message.Should().Contain("9,000");
+        exception.Message.Should().MatchRegex(@"10[.,]000"); // Support both comma and period as thousand separator
+        exception.Message.Should().MatchRegex(@"9[.,]000");  // Culture-invariant check
     }
 
     [Fact]
