@@ -5,6 +5,7 @@ using TokenRateGate.Core.Abstractions;
 using TokenRateGate.Core.Capacity;
 using TokenRateGate.Core.Models;
 using TokenRateGate.Core.Options;
+using TokenRateGate.Core.Queue;
 using TokenRateGate.Core.Timeline;
 using TokenRateGate.Core.TokenEstimation;
 using TokenRateGate.Core.Utils;
@@ -39,7 +40,6 @@ namespace TokenRateGate.Core;
 ///
 /// using var gate = new TokenRateGate(options, logger);
 /// var reservation = await gate.ReserveTokensAsync(inputTokens: 500, estimatedOutputTokens: 1500);
-/// await using var _ = reservation;
 ///
 /// // Make your API call here
 /// var response = await callLlmApi();
@@ -73,8 +73,8 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // Executing requests
     private readonly Dictionary<Guid, PendingReservations> _activeReservations = new();
 
-    // Waiting requests
-    private readonly LinkedList<WaitingRequest> _waitingRequests = new();
+    // Waiting requests queue
+    private readonly ReservationQueue _reservationQueue;
 
     private readonly SemaphoreSlim _concurrencyLimiter;
 
@@ -143,6 +143,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         // Initialize timeline manager
         _timelineManager = new TokenTimelineManager(_options, _clock, _logger);
+
+        // Initialize reservation queue
+        _reservationQueue = new ReservationQueue(_logger);
 
         _concurrencyLimiter = new SemaphoreSlim(_options.MaxConcurrentRequests, _options.MaxConcurrentRequests);
 
@@ -250,7 +253,6 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 }
 
                 var waitingRequest = new WaitingRequest(totalEstimatedTokens, cancellationToken);
-                LinkedListNode<WaitingRequest> node;
                 CancellationTokenRegistration cancellationRegistration = default;
 
                 lock (_lock)
@@ -271,43 +273,29 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                         return new TokenReservation(doubleCheckId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
                     }
 
-                    node = _waitingRequests.AddLast(waitingRequest);
-                    waitingRequest.Node = node;
-
                     long currentUsage = GetCurrentUsageInternal();
                     long reservedTokens = GetReservedTokensInternal();
+
+                    // Add to queue using the ReservationQueue abstraction
+                    cancellationRegistration = _reservationQueue.AddToQueue(
+                        waitingRequest,
+                        effectiveCancellationToken,
+                        onCancelled: () =>
+                        {
+                            lock (_lock)
+                            {
+                                // Record cancellation metric
+                                _metrics?.RecordReservationCancelled();
+                                UpdateSafetyTimerState();
+                            }
+                        });
 
                     _logger.LogInformation("Added to waiting queue: {TotalTokens} tokens (input: {InputTokens}, estimated output: {EstimatedOutput}). " +
                        "Queue length: {QueueLength}, Current usage: {CurrentUsage}/{TokenLimit} ({UsagePercent:F1}%), " +
                        "Reserved: {ReservedTokens}, Available: {AvailableTokens}",
-                        totalEstimatedTokens, inputTokens, totalEstimatedTokens - inputTokens, _waitingRequests.Count,
+                        totalEstimatedTokens, inputTokens, totalEstimatedTokens - inputTokens, _reservationQueue.Count,
                         currentUsage, _options.TokenLimit, (double)currentUsage / _options.TokenLimit * 100,
                         reservedTokens, Math.Max(0, _options.TokenLimit - _safetyBuffer - currentUsage));
-
-                    // Register cancellation callback INSIDE the lock to avoid race condition
-                    // The callback must check if the request is still in the queue before cancelling
-                    cancellationRegistration = effectiveCancellationToken.Register(() =>
-                    {
-                        lock (_lock)
-                        {
-                            // Only cancel if still in queue (node not null and still belongs to this list)
-                            if (waitingRequest.Node != null && waitingRequest.Node.List == _waitingRequests)
-                            {
-                                _waitingRequests.Remove(waitingRequest.Node);
-                                waitingRequest.Node = null;
-
-                                // Set cancelled AFTER removing from queue to prevent race
-                                waitingRequest.TaskCompletionSource.TrySetCanceled(effectiveCancellationToken);
-
-                                _logger.LogDebug("Cancelled waiting request: {TotalTokens} tokens", totalEstimatedTokens);
-
-                                // Record cancellation metric
-                                _metrics?.RecordReservationCancelled();
-
-                                UpdateSafetyTimerState();
-                            }
-                        }
-                    });
 
                     UpdateSafetyTimerState();
                 }
@@ -462,7 +450,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         }
 
         // Process waiting queue if either token capacity or request capacity was freed
-        if ((result.TokensFreed || result.RequestsFreed) && _waitingRequests.Count > 0)
+        if ((result.TokensFreed || result.RequestsFreed) && _reservationQueue.HasWaitingRequests)
             TryProcessingWaitingRequests();
     }
 
@@ -472,7 +460,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         lock (_lock)
         {
-            if (_waitingRequests.Count == 0)
+            if (!_reservationQueue.HasWaitingRequests)
             {
                 UpdateSafetyTimerState();
                 return;
@@ -481,56 +469,28 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             // Force cleanup to ensure tokens are freed immediately for waiting requests
             CleanupExpiredRecords(forceCleanup: true);
 
-            var currentNode = _waitingRequests.First;
-            grantedRequests = new List<WaitingRequest>();
-
-            while (currentNode != null)
-            {
-                var request = currentNode.Value;
-                var nextNode = currentNode.Next;
-
-                // Check cancellation - if cancelled, remove and skip
-                if (request.CancellationToken.IsCancellationRequested)
+            // Use the ReservationQueue to process waiting requests
+            grantedRequests = _reservationQueue.ProcessQueue(
+                tryReserveFunc: requiredTokens =>
                 {
-                    _waitingRequests.Remove(currentNode);
-                    request.Node = null;
-                    // Don't set result here - the cancellation callback already did it
-
-                    _logger.LogDebug("Removed cancelled request: {RequiredTokens} tokens", request.RequiredTokens);
-
-                    currentNode = nextNode;
-                    continue;
-                }
-
-                // Try to grant this request
-                if (TryReserveImmediatelyInternal(request.RequiredTokens, out Guid reservationId))
+                    if (TryReserveImmediatelyInternal(requiredTokens, out Guid reservationId))
+                    {
+                        return (true, reservationId);
+                    }
+                    return (false, Guid.Empty);
+                },
+                onInsufficientCapacity: requiredTokens =>
                 {
-                    _waitingRequests.Remove(currentNode);
-                    request.Node = null;
-                    request.ReservationId = reservationId;
-                    grantedRequests.Add(request);
-
-                    _logger.LogDebug("Granted waiting request: {RequiredTokens} tokens with ID {ReservationID} (queue: {Remaining})",
-                        request.RequiredTokens, reservationId, _waitingRequests.Count);
-                }
-                else
-                {
-                    // No more capacity available, stop processing
                     _hasInsufficientCapacity = true;
-
                     _logger.LogDebug("Insufficient capacity for {RequiredTokens} tokens, stopping queue processing " +
                                      "(current usage: {CurrentUsage}/{TokenLimit})",
-                        request.RequiredTokens, GetCurrentUsageInternal(), _options.TokenLimit);
-
-                    break;
-                }
-
-                currentNode = nextNode;
-            }
+                        requiredTokens, GetCurrentUsageInternal(), _options.TokenLimit);
+                });
 
             UpdateSafetyTimerState();
         }
 
+        // Complete granted requests outside the lock
         if (grantedRequests != null)
         {
             foreach (var request in grantedRequests)
@@ -541,7 +501,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // Must be called within the lock
     private void UpdateSafetyTimerState()
     {
-        bool hasWaitingRequests =  _waitingRequests.Count > 0;
+        bool hasWaitingRequests = _reservationQueue.HasWaitingRequests;
         bool hasActiveReservations = _activeReservations.Count > 0;
 
         // Run timer when we have waiting requests - handles two scenarios:
@@ -555,14 +515,14 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             // The safety timer uses forceCleanup=true so cleanup throttling doesn't apply
             _safetyTimer.Change(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
             _logger.LogDebug("Safety timer STARTED (waiting: {WaitingCount}, active: {ActiveCount})",
-                            _waitingRequests.Count, _activeReservations.Count);
+                            _reservationQueue.Count, _activeReservations.Count);
         }
         else
         {
             _safetyTimer.Change(Timeout.Infinite, Timeout.Infinite);
             if (hasWaitingRequests || hasActiveReservations)
                 _logger.LogDebug("Safety timer STOPPED (waiting: {WaitingCount}, active: {ActiveCount})",
-                                _waitingRequests.Count, _activeReservations.Count);
+                                _reservationQueue.Count, _activeReservations.Count);
         }
     }
 
@@ -574,7 +534,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         {
             lock (_lock)
             {
-                if (_waitingRequests.Count > 0)
+                if (_reservationQueue.HasWaitingRequests)
                 {
                     // Always cleanup to free expired tokens/requests (throttling removed for performance)
                     // This handles two scenarios:
@@ -586,7 +546,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     if (!_hasInsufficientCapacity)
                     {
                         _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests (active: {ActiveCount})",
-                            _waitingRequests.Count, _activeReservations.Count);
+                            _reservationQueue.Count, _activeReservations.Count);
                     }
                 }
 
@@ -595,7 +555,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
             // Only try processing queue if we haven't already determined there's no capacity
             // The flag will be reset when cleanup frees tokens or requests, allowing processing to resume
-            if (!_disposed && _waitingRequests.Count > 0 && !_hasInsufficientCapacity)
+            if (!_disposed && _reservationQueue.HasWaitingRequests && !_hasInsufficientCapacity)
             {
                 TryProcessingWaitingRequests();
             }
@@ -641,7 +601,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         {
             if (_activeReservations.Remove(reservation.Id))
             {
-                shouldProcessQueue = _waitingRequests.Count > 0;
+                shouldProcessQueue = _reservationQueue.HasWaitingRequests;
 
                 // Reset insufficient capacity flag when reservation is released
                 // This allows queue processing to resume even if cleanup hasn't run yet
@@ -737,7 +697,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             long availableCapacity = Math.Max(0, effectiveCapacity - totalUsage);
 
             int activeReservationsCount = _activeReservations.Count;
-            int waitingRequestsCount = _waitingRequests.Count;
+            int waitingRequestsCount = _reservationQueue.Count;
 
             // Calculate average estimation efficiency from active reservations
             double averageEstimationEfficiency = CalculateAverageEstimationEfficiency();
@@ -821,14 +781,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
             lock (_lock)
             {
-                foreach (var request in _waitingRequests)
-                {
-                    request.TaskCompletionSource.TrySetCanceled();
-                }
-                _waitingRequests.Clear();
+                _reservationQueue.CancelAll();
             }
         }
-        
+
         GC.SuppressFinalize(this);
     }
 
