@@ -7,6 +7,7 @@ using TokenRateGate.Core.Models;
 using TokenRateGate.Core.Options;
 using TokenRateGate.Core.Queue;
 using TokenRateGate.Core.Timeline;
+using TokenRateGate.Core.Timer;
 using TokenRateGate.Core.TokenEstimation;
 using TokenRateGate.Core.Utils;
 using TokenRateGate.Core.Validation;
@@ -78,7 +79,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
     private readonly SemaphoreSlim _concurrencyLimiter;
 
-    private readonly Timer _safetyTimer;
+    private readonly SafetyTimerManager _safetyTimer;
     private volatile bool _disposed;
 
     private DateTime _lastCleanup = DateTime.MinValue;
@@ -149,7 +150,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         _concurrencyLimiter = new SemaphoreSlim(_options.MaxConcurrentRequests, _options.MaxConcurrentRequests);
 
-        _safetyTimer = new Timer(SafetyTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
+        _safetyTimer = new SafetyTimerManager(SafetyTimerCallback, _logger);
 
         // Initialize metrics if OpenTelemetry is enabled
         _metrics = new TokenRateGateMetrics(this);
@@ -502,67 +503,42 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private void UpdateSafetyTimerState()
     {
         bool hasWaitingRequests = _reservationQueue.HasWaitingRequests;
-        bool hasActiveReservations = _activeReservations.Count > 0;
+        int activeReservationCount = _activeReservations.Count;
+        int waitingRequestCount = _reservationQueue.Count;
 
-        // Run timer when we have waiting requests - handles two scenarios:
-        // 1. No active work (deadlock detection - all requests done but timestamps haven't expired)
-        // 2. Active work exists but RPM limit blocks new requests (timestamps need to expire)
-        bool shouldRunTimer = hasWaitingRequests;
-
-        if (shouldRunTimer)
-        {
-            // Use a shorter interval (100ms) for the safety timer to ensure it triggers quickly
-            // The safety timer uses forceCleanup=true so cleanup throttling doesn't apply
-            _safetyTimer.Change(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(100));
-            _logger.LogDebug("Safety timer STARTED (waiting: {WaitingCount}, active: {ActiveCount})",
-                            _reservationQueue.Count, _activeReservations.Count);
-        }
-        else
-        {
-            _safetyTimer.Change(Timeout.Infinite, Timeout.Infinite);
-            if (hasWaitingRequests || hasActiveReservations)
-                _logger.LogDebug("Safety timer STOPPED (waiting: {WaitingCount}, active: {ActiveCount})",
-                                _reservationQueue.Count, _activeReservations.Count);
-        }
+        _safetyTimer.UpdateState(hasWaitingRequests, activeReservationCount, waitingRequestCount);
     }
 
-    private void SafetyTimerCallback(object? state)
+    private void SafetyTimerCallback()
     {
         if (_disposed) return;
 
-        try
+        lock (_lock)
         {
-            lock (_lock)
+            if (_reservationQueue.HasWaitingRequests)
             {
-                if (_reservationQueue.HasWaitingRequests)
+                // Always cleanup to free expired tokens/requests (throttling removed for performance)
+                // This handles two scenarios:
+                // 1. No active reservations: deadlock detection (all work done but timestamps haven't expired)
+                // 2. Active reservations exist: RPM limit blocking (request timestamps need to expire)
+                CleanupExpiredRecords(forceCleanup: true);
+
+                // Only log if we're going to try processing (avoid log spam)
+                if (!_hasInsufficientCapacity)
                 {
-                    // Always cleanup to free expired tokens/requests (throttling removed for performance)
-                    // This handles two scenarios:
-                    // 1. No active reservations: deadlock detection (all work done but timestamps haven't expired)
-                    // 2. Active reservations exist: RPM limit blocking (request timestamps need to expire)
-                    CleanupExpiredRecords(forceCleanup: true);
-
-                    // Only log if we're going to try processing (avoid log spam)
-                    if (!_hasInsufficientCapacity)
-                    {
-                        _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests (active: {ActiveCount})",
-                            _reservationQueue.Count, _activeReservations.Count);
-                    }
+                    _logger.LogInformation("Safety timer triggered: processing {WaitingCount} waiting requests (active: {ActiveCount})",
+                        _reservationQueue.Count, _activeReservations.Count);
                 }
-
-                UpdateSafetyTimerState();
             }
 
-            // Only try processing queue if we haven't already determined there's no capacity
-            // The flag will be reset when cleanup frees tokens or requests, allowing processing to resume
-            if (!_disposed && _reservationQueue.HasWaitingRequests && !_hasInsufficientCapacity)
-            {
-                TryProcessingWaitingRequests();
-            }
+            UpdateSafetyTimerState();
         }
-        catch (Exception ex)
+
+        // Only try processing queue if we haven't already determined there's no capacity
+        // The flag will be reset when cleanup frees tokens or requests, allowing processing to resume
+        if (!_disposed && _reservationQueue.HasWaitingRequests && !_hasInsufficientCapacity)
         {
-            _logger.LogError(ex, "Safety timer error");
+            TryProcessingWaitingRequests();
         }
     }
 
