@@ -5,6 +5,7 @@ using TokenRateGate.Core.Abstractions;
 using TokenRateGate.Core.Capacity;
 using TokenRateGate.Core.Models;
 using TokenRateGate.Core.Options;
+using TokenRateGate.Core.Timeline;
 using TokenRateGate.Core.TokenEstimation;
 using TokenRateGate.Core.Utils;
 
@@ -57,6 +58,8 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private readonly TokenRateGateMetrics? _metrics;
     private readonly ITokenEstimator _tokenEstimator;
     private readonly CapacityCalculator _capacityCalculator;
+    private readonly ISystemClock _clock;
+    private readonly TokenTimelineManager _timelineManager;
 
     private readonly int _safetyBuffer; // Calculated from SafetyBufferPercentage
 
@@ -66,18 +69,11 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // TOKEN TRACKING
     // ============================================================================
 
-    // Completed requests timeline
-    private readonly Queue<TokenUsageEntry> _usageTimeline = new();
-    private long _currentActualUsage;
-
     // Executing requests
     private readonly Dictionary<Guid, PendingReservations> _activeReservations = new();
 
     // Waiting requests
     private readonly LinkedList<WaitingRequest> _waitingRequests = new();
-
-    // Request timeline for rate limiting
-    private readonly Queue<DateTime> _requestTimeline = new();
 
     private readonly SemaphoreSlim _concurrencyLimiter;
 
@@ -109,41 +105,6 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     /// </summary>
     private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(1);
 
-    /// <summary>
-    /// Minimum request history window in seconds. Request timeline is kept for at least
-    /// this duration or 2x the token window, whichever is larger.
-    /// Rationale: 120 seconds (2 minutes) ensures we have sufficient history for
-    /// request-per-minute calculations even with small token windows.
-    /// </summary>
-    private const int MinRequestHistoryWindowSeconds = 120;
-
-    /// <summary>
-    /// Multiplier for request history window relative to token window.
-    /// Rationale: 2x ensures we capture sufficient request history for rate calculations.
-    /// </summary>
-    private const int RequestHistoryWindowMultiplier = 2;
-
-    /// <summary>
-    /// Minimum timeout before considering a reservation stale (in seconds).
-    /// Rationale: 600 seconds (10 minutes) is reasonable minimum - shorter would risk
-    /// cleaning up legitimately slow requests, longer would waste memory.
-    /// </summary>
-    private const int MinStaleReservationTimeoutSeconds = 600;
-
-    /// <summary>
-    /// Maximum timeout before considering a reservation stale (in seconds).
-    /// Rationale: 86400 seconds (24 hours) is absolute maximum - any reservation
-    /// older than this is definitely stale and should be cleaned up.
-    /// </summary>
-    private const int MaxStaleReservationTimeoutSeconds = 86400;
-
-    /// <summary>
-    /// Multiplier for stale reservation timeout relative to token window.
-    /// Rationale: 10x the token window is generous buffer for request completion
-    /// while ensuring stale reservations don't accumulate indefinitely.
-    /// </summary>
-    private const int StaleReservationTimeoutMultiplier = 10;
-
     // ============================================================================
     // CONSTRUCTORS
     // ============================================================================
@@ -154,9 +115,19 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     }
 
     public TokenRateGate(TokenRateGateOptions options, ILogger<TokenRateGate> logger)
+        : this(options, logger, new SystemClock())
+    {
+    }
+
+    // Internal constructor for testing with injectable clock
+    internal TokenRateGate(
+        TokenRateGateOptions options,
+        ILogger<TokenRateGate> logger,
+        ISystemClock clock)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
 
         ValidateOptions();
 
@@ -168,6 +139,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         // Initialize capacity calculator
         _capacityCalculator = new CapacityCalculator(_options, _safetyBuffer);
+
+        // Initialize timeline manager
+        _timelineManager = new TokenTimelineManager(_options, _clock, _logger);
 
         _concurrencyLimiter = new SemaphoreSlim(_options.MaxConcurrentRequests, _options.MaxConcurrentRequests);
 
@@ -235,7 +209,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         }
 
         // Start timing from the very beginning of the reservation attempt
-        var reservationStartTime = DateTime.UtcNow;
+        var reservationStartTime = _clock.UtcNow;
 
         // Create timeout token if MaxWaitTime is configured
         CancellationTokenSource? timeoutCts = null;
@@ -347,7 +321,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                     // If an exception occurs after this point, TokenReservation will handle the release
                     semaphoreAcquired = false; // Ownership transferred to TokenReservation
 
-                    var totalWaitTime = DateTime.UtcNow - reservationStartTime;
+                    var totalWaitTime = _clock.UtcNow - reservationStartTime;
                     _logger.LogDebug(
                         "Granted queued reservation: {TotalTokens} tokens with ID {ReservationId} after waiting {WaitTime:mm\\:ss}",
                         totalEstimatedTokens, reservationId, totalWaitTime);
@@ -361,7 +335,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 catch (OperationCanceledException ex) when (ex.CancellationToken.IsCancellationRequested &&
                                                             !cancellationToken.IsCancellationRequested)
                 {
-                    var elapsedTime = DateTime.UtcNow - reservationStartTime;
+                    var elapsedTime = _clock.UtcNow - reservationStartTime;
 
                     // Record timeout metric
                     _metrics?.RecordReservationTimeout();
@@ -449,10 +423,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         if (HasCapacityInternal(requiredTokens))
         {
             immediateId =  Guid.NewGuid();
-            var reservation = new PendingReservations(immediateId, requiredTokens, DateTime.UtcNow);
+            var reservation = new PendingReservations(immediateId, requiredTokens, _clock.UtcNow);
             _activeReservations[immediateId] = reservation;
 
-            _requestTimeline.Enqueue((DateTime.UtcNow));
+            _timelineManager.AddRequest();
 
             return true;
         }
@@ -470,94 +444,25 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // 3. Alternative (releasing lock before processing) would introduce race conditions
     private void CleanupExpiredRecords(bool forceCleanup = false)
     {
-        var now =  DateTime.UtcNow;
+        var now = _clock.UtcNow;
 
         // Throttling removed for high-throughput performance
         // Cleanup is fast (O(k) where k = expired items) and lock is already held
 
-        bool tokensFreed = CleanupTokenTimeline(now);
-        bool requestsFreed = CleanupRequestTimeline(now);
-        CleanupStaleReservations(now);
+        var result = _timelineManager.CleanupExpiredEntries();
+        _timelineManager.CleanupStaleReservations(_activeReservations);
 
         _lastCleanup = now;
 
+        // Reset insufficient capacity flag if tokens or requests were freed
+        if (result.TokensFreed || result.RequestsFreed)
+        {
+            _hasInsufficientCapacity = false;
+        }
+
         // Process waiting queue if either token capacity or request capacity was freed
-        if ((tokensFreed || requestsFreed) && _waitingRequests.Count > 0)
+        if ((result.TokensFreed || result.RequestsFreed) && _waitingRequests.Count > 0)
             TryProcessingWaitingRequests();
-    }
-
-    private bool CleanupTokenTimeline(DateTime now)
-    {
-        var cutoff = now.AddSeconds(-_options.WindowSeconds);
-        int removedTokens = 0;
-        int removedEntries = 0;
-
-        while (_usageTimeline.Count > 0 && _usageTimeline.Peek().Timestamp < cutoff)
-        {
-            var expired =  _usageTimeline.Dequeue();
-            removedTokens += expired.ActualTokens;
-            removedEntries++;
-        }
-        
-        if (removedTokens > 0)
-        {
-            _currentActualUsage -= removedTokens;
-
-            // Reset insufficient capacity flag since tokens were freed
-            _hasInsufficientCapacity = false;
-
-            _logger.LogDebug("Cleaned {RemovedTokens} expired tokens ({RemovedEntries} entries). Current usage: {CurrentUsage}",
-                             removedTokens, removedEntries, _currentActualUsage);
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private bool CleanupRequestTimeline(DateTime now)
-    {
-        // Use the configured RequestWindowSeconds for RPM limiting
-        // This is the actual sliding window for request-per-minute tracking
-        var cutoff = now.AddSeconds(-_options.RequestWindowSeconds);
-
-        int removedRequests = 0;
-        while (_requestTimeline.Count > 0 && _requestTimeline.Peek() < cutoff)
-        {
-            _requestTimeline.Dequeue();
-            removedRequests++;
-        }
-
-        if (removedRequests > 0)
-        {
-            // Reset insufficient capacity flag since request capacity was freed
-            _hasInsufficientCapacity = false;
-
-            _logger.LogDebug("Cleaned up {RemovedRequests} expired request timestamps", removedRequests);
-            return true;
-        }
-
-        return false;
-    }
-
-    private void CleanupStaleReservations(DateTime now)
-    {
-        var staleTimeout = TimeSpan.FromSeconds(
-            Math.Max(MinStaleReservationTimeoutSeconds,
-                Math.Min(MaxStaleReservationTimeoutSeconds,
-                    _options.WindowSeconds * StaleReservationTimeoutMultiplier)));
-        var staleReservationCutoff = now.Subtract(staleTimeout);
-        
-        var staleIds = _activeReservations
-            .Where(kv => kv.Value.Timestamp < staleReservationCutoff)
-            .Select(kv => kv.Key)
-            .ToList();
-
-        foreach (var id in staleIds)
-        {
-            _activeReservations.Remove(id);
-            _logger.LogWarning("Removed stale reservation {ReservationId}", id);
-        }
     }
 
     public void TryProcessingWaitingRequests()
@@ -703,7 +608,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private bool HasCapacityInternal(int requiredTokens)
     {
         long currentUsage = GetCurrentUsageInternal();
-        int requestCount = _requestTimeline.Count;
+        int requestCount = _timelineManager.RequestCount;
 
         return _capacityCalculator.HasCapacity(currentUsage, requestCount, requiredTokens);
     }
@@ -746,9 +651,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
                 if (reservation.ActualTokensUsed.HasValue)
                 {
-                    var now =  DateTime.UtcNow;
-                    _usageTimeline.Enqueue(new TokenUsageEntry(now, reservation.ActualTokensUsed.Value, reservation.ReservedTokens));
-                    _currentActualUsage += reservation.ActualTokensUsed.Value;
+                    _timelineManager.AddTokenUsage(reservation.ActualTokensUsed.Value, reservation.ReservedTokens);
 
                     var efficiency = reservation.ReservedTokens > 0
                         ? (double)reservation.ActualTokensUsed.Value / reservation.ReservedTokens * 100
@@ -807,10 +710,10 @@ public class TokenRateGate : ITokenRateGate, IDisposable
             CleanupExpiredRecords();
 
             // CurrentUsage includes:
-            // 1. Completed requests (from _usageTimeline)
+            // 1. Completed requests (from timeline manager)
             // 2. Active reservations with recorded actual usage
             // This provides real-time visibility into actual token consumption
-            long completedUsage = _currentActualUsage;
+            long completedUsage = _timelineManager.CurrentActualUsage;
 
             // Calculate actual usage from active reservations that have called RecordActualUsage()
             long activeActualUsage = _activeReservations.Values
@@ -875,7 +778,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private long GetCurrentUsageInternal()
     {
         return _capacityCalculator.CalculateCurrentUsage(
-            _currentActualUsage,
+            _timelineManager.CurrentActualUsage,
             _activeReservations.Values);
     }
 
@@ -897,25 +800,12 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     /// </remarks>
     public int GetCurrentRequestCount()
     {
-        return _requestTimeline.Count;
+        return _timelineManager.RequestCount;
     }
 
     private double CalculateAverageEstimationEfficiency()
     {
-        // Calculate average efficiency from completed requests in the usage timeline
-        if (_usageTimeline.Count == 0)
-            return 1.0; // Default to perfect efficiency when no data available
-
-        int totalActual = 0;
-        int totalReserved = 0;
-
-        foreach (var entry in _usageTimeline)
-        {
-            totalActual += entry.ActualTokens;
-            totalReserved += entry.ReservedTokens;
-        }
-
-        return totalReserved > 0 ? (double)totalActual / totalReserved : 1.0;
+        return _timelineManager.CalculateAverageEstimationEfficiency();
     }
 
     private void ValidateOptions()
