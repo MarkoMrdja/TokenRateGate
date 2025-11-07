@@ -261,15 +261,17 @@ public class DeadlockAndEdgeCaseTests
         // Should complete without exceptions
         await Task.WhenAll(recordTasks);
 
-        // Assert - Only the first call should have been recorded
+        // Assert - Only one call should have been recorded (but we don't know which thread won the race)
         Assert.NotNull(reservation.ActualTokensUsed);
-        Assert.Equal(200, reservation.ActualTokensUsed.Value); // First call: 100 + 100 = 200
+        // The value should be in the range [200, 219] (from iterations 0-19: 100+i, 100+i)
+        Assert.InRange(reservation.ActualTokensUsed.Value, 200, 219);
 
+        var recordedUsage = reservation.ActualTokensUsed.Value;
         await reservation.DisposeAsync();
 
         // Verify statistics are consistent (not corrupted by multiple recordings)
         var stats = gate.GetUsageStats();
-        Assert.Equal(200, stats.CurrentUsage); // Should be exactly 200, not 200 * 20
+        Assert.Equal(recordedUsage, stats.CurrentUsage); // Should match whatever value was recorded, not sum of all attempts
     }
 
     [Fact]

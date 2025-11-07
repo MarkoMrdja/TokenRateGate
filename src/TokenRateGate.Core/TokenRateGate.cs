@@ -82,8 +82,6 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     private readonly SafetyTimerManager _safetyTimer;
     private volatile bool _disposed;
 
-    private DateTime _lastCleanup = DateTime.MinValue;
-
     /// <summary>
     /// Flag to avoid wasteful queue processing when capacity is known to be insufficient.
     /// Reset when tokens are freed during cleanup.
@@ -91,21 +89,6 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     /// This ensures memory visibility across threads - the timer thread always sees the latest value.
     /// </summary>
     private volatile bool _hasInsufficientCapacity = false;
-
-    // ============================================================================
-    // CONSTANTS - Internal Operation Timing
-    // ============================================================================
-
-    /// <summary>
-    /// NOTE: Cleanup throttling has been removed for optimal high-throughput performance.
-    /// Cleanup is now called on every reservation attempt, which is safe because:
-    /// 1. Cleanup is O(k) where k = number of expired items (typically 1-20)
-    /// 2. The lock is already held during reservation attempts
-    /// 3. DateTime comparisons and dequeuing are extremely fast (microseconds)
-    /// 4. This ensures zero-latency token freeing for maximum throughput
-    /// The _lastCleanup field is kept for potential future metrics/debugging.
-    /// </summary>
-    private readonly TimeSpan _internalOperationInterval = TimeSpan.FromSeconds(1);
 
     // ============================================================================
     // CONSTRUCTORS
@@ -467,15 +450,11 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // 3. Alternative (releasing lock before processing) would introduce race conditions
     private void CleanupExpiredRecords(bool forceCleanup = false)
     {
-        var now = _clock.UtcNow;
-
         // Throttling removed for high-throughput performance
         // Cleanup is fast (O(k) where k = expired items) and lock is already held
 
         var result = _timelineManager.CleanupExpiredEntries();
         _timelineManager.CleanupStaleReservations(_activeReservations);
-
-        _lastCleanup = now;
 
         // Reset insufficient capacity flag if tokens or requests were freed
         if (result.TokensFreed || result.RequestsFreed)
@@ -765,12 +744,15 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     /// This method returns the count of all requests that fall within the configured RequestWindowSeconds,
     /// including both active reservations and completed requests that haven't yet expired from the timeline.
     /// This is useful for monitoring how close you are to hitting the MaxRequestsPerMinute limit.
-    /// Since CleanupRequestTimeline removes old entries regularly, we can use the direct count for performance.
-    /// This is O(1) instead of O(n). The cleanup ensures the queue contains mostly recent requests.
+    /// This method triggers cleanup to ensure accurate counts, maintaining consistency with GetUsageStats().
     /// </remarks>
     public int GetCurrentRequestCount()
     {
-        return _timelineManager.RequestCount;
+        lock (_lock)
+        {
+            CleanupExpiredRecords();
+            return _timelineManager.RequestCount;
+        }
     }
 
     private double CalculateAverageEstimationEfficiency()

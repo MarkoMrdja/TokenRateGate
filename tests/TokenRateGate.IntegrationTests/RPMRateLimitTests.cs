@@ -83,20 +83,22 @@ public class RPMRateLimitTests : IDisposable
     [Fact]
     public async Task RPM_And_TPM_ShouldBothBeEnforced_WhicheverIsMoreRestrictive()
     {
-        // Arrange: Configure with both limits active
+        // Arrange: Use shorter windows for faster testing but with comfortable margins
         var options = Options.Create(new TokenRateGateOptions
         {
             TokenLimit = 5_000,  // Token limit
-            WindowSeconds = 10,
+            WindowSeconds = 5,   // Shorter window for faster test
             MaxRequestsPerMinute = 10,  // RPM limit
-            RequestWindowSeconds = 10,
+            RequestWindowSeconds = 5,   // Shorter window for faster test
             SafetyBufferPercentage = 0.0,
             MaxConcurrentRequests = 20
         });
 
         _gate = new TokenRateGate.Core.TokenRateGate(options, NullLogger<TokenRateGate.Core.TokenRateGate>.Instance);
 
-        // Scenario 1: Hit RPM limit first (many small requests)
+        // ========================================================================
+        // Scenario 1: Verify RPM limit blocks requests (many small requests)
+        // ========================================================================
         var smallReservations = new List<Core.Models.TokenReservation>();
         for (int i = 0; i < 10; i++)
         {
@@ -104,10 +106,13 @@ public class RPMRateLimitTests : IDisposable
             smallReservations.Add(reservation);
         }
 
+        // Verify we've hit the RPM limit
+        _gate.GetCurrentRequestCount().Should().Be(10, "Should have 10 requests in RPM window");
+
         // 11th request should be queued due to RPM
         using var cts1 = new CancellationTokenSource();
         var rpmBlockedTask = _gate.ReserveTokensAsync(100, 0, cts1.Token);
-        await Task.Delay(100);
+        await Task.Delay(200);  // Give it time to queue
         rpmBlockedTask.IsCompleted.Should().BeFalse("Should be blocked by RPM limit");
 
         // Cancel the blocked request (must cancel BEFORE disposing)
@@ -123,16 +128,24 @@ public class RPMRateLimitTests : IDisposable
             // Expected - request was cancelled
         }
 
-        // Cleanup
+        // Cleanup all reservations from Scenario 1
         foreach (var res in smallReservations)
         {
             await res.DisposeAsync();
         }
 
-        // Wait for gate to reset
-        await Task.Delay(11_000);
+        // Wait for RPM window to fully expire with comfortable margin
+        // Window is 5s, so wait 6s to ensure all requests expired + safety timer cycles
+        await Task.Delay(6_000);
 
-        // Scenario 2: Hit token limit first (few large requests)
+        // Verify the gate is clean before Scenario 2
+        _gate.GetCurrentRequestCount().Should().Be(0, "All requests should have expired from RPM window");
+        var statsBeforeScenario2 = _gate.GetUsageStats();
+        statsBeforeScenario2.CurrentUsage.Should().Be(0, "All tokens should have been freed");
+
+        // ========================================================================
+        // Scenario 2: Verify token limit blocks requests (few large requests)
+        // ========================================================================
         var largeReservations = new List<Core.Models.TokenReservation>();
 
         // Fill token capacity with 5 large requests (1000 tokens each = 5000 total)
@@ -144,12 +157,13 @@ public class RPMRateLimitTests : IDisposable
 
         var stats = _gate.GetUsageStats();
         stats.AvailableTokens.Should().BeLessThan(1000, "Should be near token capacity");
+        _gate.GetCurrentRequestCount().Should().Be(5, "Should have 5 requests in RPM window (well under limit of 10)");
 
-        // 6th request blocked by token limit (RPM still has room for 5 more)
+        // 6th request should be blocked by token limit (RPM still has room for 5 more)
         using var cts2 = new CancellationTokenSource();
         var tokenBlockedTask = _gate.ReserveTokensAsync(1000, 0, cts2.Token);
-        await Task.Delay(100);
-        tokenBlockedTask.IsCompleted.Should().BeFalse("Should be blocked by token limit");
+        await Task.Delay(200);  // Give it time to queue
+        tokenBlockedTask.IsCompleted.Should().BeFalse("Should be blocked by token limit (not RPM)");
 
         // Cancel the blocked request
         cts2.Cancel();
