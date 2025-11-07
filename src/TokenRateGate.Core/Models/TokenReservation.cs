@@ -100,7 +100,16 @@ public class TokenReservation : ITokenReservation
         if (actualOutputTokens < 0)
             throw new ArgumentException("Actual output tokens cannot be negative", nameof(actualOutputTokens));
 
-        int totalActual = actualInputTokens + actualOutputTokens;
+        // Check for overflow before adding (consistent with CalculateEstimatedTotalTokens pattern)
+        long totalActualLong = (long)actualInputTokens + actualOutputTokens;
+        if (totalActualLong > int.MaxValue)
+        {
+            throw new ArgumentException(
+                $"Total actual tokens ({totalActualLong:N0}) exceeds maximum supported value ({int.MaxValue:N0}). " +
+                $"This is far beyond current LLM capabilities and likely indicates a bug.");
+        }
+
+        int totalActual = (int)totalActualLong;
         RecordActualUsage(totalActual);
     }
 

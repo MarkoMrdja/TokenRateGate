@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -34,15 +35,26 @@ public class ChatClientRateLimitExtensionsTests : IDisposable
         // Setup mock service provider
         _mockServiceProvider = Substitute.For<IServiceProvider>();
 
-        // Reset TokenRateGateServiceAccessor for test isolation
-        TokenRateGateServiceAccessor.Reset();
+        // Reset TokenRateGateServiceAccessor for test isolation using reflection
+        ResetServiceAccessor();
     }
 
     public void Dispose()
     {
-        // Clean up: reset the service accessor after each test
-        TokenRateGateServiceAccessor.Reset();
+        // Clean up: reset the service accessor after each test using reflection
+        ResetServiceAccessor();
         GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Resets the TokenRateGateServiceAccessor using reflection for proper test isolation.
+    /// This is a cleaner alternative to having a public Reset() method in production code.
+    /// </summary>
+    private static void ResetServiceAccessor()
+    {
+        var field = typeof(TokenRateGateServiceAccessor).GetField("_serviceProvider",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        field?.SetValue(null, null);
     }
 
     #region WithRateLimit(ChatClient, ITokenRateGate, string, ILoggerFactory?) - Direct Injection

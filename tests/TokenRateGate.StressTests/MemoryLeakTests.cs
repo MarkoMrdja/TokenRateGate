@@ -270,13 +270,9 @@ public class MemoryLeakTests
         {
             for (int i = 0; i < 2_500; i++)
             {
-                try
-                {
-                    var reservation = await gate.ReserveTokensAsync(10, 10);
-                    reservation.RecordActualUsage(10, 10);
-                    await reservation.DisposeAsync();
-                }
-                catch { }
+                var reservation = await gate.ReserveTokensAsync(10, 10);
+                reservation.RecordActualUsage(10, 10);
+                await reservation.DisposeAsync();
             }
         });
 

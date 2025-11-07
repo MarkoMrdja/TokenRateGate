@@ -86,19 +86,4 @@ public static class TokenRateGateServiceAccessor
     {
         return ServiceProvider.GetService<T>();
     }
-
-    /// <summary>
-    /// Resets the service provider. This is primarily for testing purposes.
-    /// </summary>
-    /// <remarks>
-    /// WARNING: This method should only be used in test scenarios.
-    /// Calling this in production code can lead to undefined behavior.
-    /// </remarks>
-    internal static void Reset()
-    {
-        lock (_lock)
-        {
-            _serviceProvider = null;
-        }
-    }
 }
