@@ -266,9 +266,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         _metrics?.RecordReservationGranted();
 
-        // Transfer semaphore ownership to TokenReservation
+        // Semaphore ownership transfers to TokenReservation
         var reservation = new TokenReservation(immediateId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
-        return (reservation, false); // Reservation created, semaphore transferred
+        return (reservation, false);
     }
 
     private async Task<(TokenReservation reservation, bool semaphoreAcquired)> QueueAndWaitForReservation(
@@ -281,10 +281,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         var waitingRequest = new WaitingRequest(totalEstimatedTokens, userCancellationToken);
         CancellationTokenRegistration cancellationRegistration = default;
 
-        // Double-check and enqueue
         lock (_lock)
         {
-            // Double-check: capacity might have become available
+            // Double-check: capacity might have become available while acquiring semaphore
             if (TryReserveImmediatelyInternal(totalEstimatedTokens, out var doubleCheckId))
             {
                 _logger.LogDebug("Double-check reservation: {TotalTokens} tokens with ID {ReservationId}",
@@ -293,9 +292,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 _metrics?.RecordReservationGranted();
                 UpdateSafetyTimerState();
 
-                // Transfer ownership to TokenReservation
+                // Semaphore ownership transfers to TokenReservation
                 var reservation = new TokenReservation(doubleCheckId, totalEstimatedTokens, inputTokens, ReleaseReservationAsync, _concurrencyLimiter, RecordActualUsageCallback);
-                return (reservation, false); // Semaphore transferred
+                return (reservation, false);
             }
 
             // Add to queue
@@ -447,11 +446,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     // lock hold time, it prevents race conditions and is acceptable since:
     // 1. Cleanup is fast - O(k) where k = number of expired items (typically 1-20)
     // 2. Processing waiting requests is typically fast (immediate capacity checks)
-    // 3. Alternative (releasing lock before processing) would introduce race conditions
     private void CleanupExpiredRecords(bool forceCleanup = false)
     {
-        // Throttling removed for high-throughput performance
-        // Cleanup is fast (O(k) where k = expired items) and lock is already held
+        // Cleanup is fast (O(k) where k = expired items) and lock is already held, so no throttling is needed
 
         var result = _timelineManager.CleanupExpiredEntries();
         _timelineManager.CleanupStaleReservations(_activeReservations);
@@ -529,8 +526,7 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         {
             if (_reservationQueue.HasWaitingRequests)
             {
-                // Always cleanup to free expired tokens/requests (throttling removed for performance)
-                // This handles two scenarios:
+                // Always cleanup to free expired tokens/requests. This handles two scenarios:
                 // 1. No active reservations: deadlock detection (all work done but timestamps haven't expired)
                 // 2. Active reservations exist: RPM limit blocking (request timestamps need to expire)
                 CleanupExpiredRecords(forceCleanup: true);

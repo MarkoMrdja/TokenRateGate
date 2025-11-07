@@ -4,7 +4,7 @@ using NSubstitute;
 using TokenRateGate.Core.Options;
 using TokenRateGate.Core.Validation;
 
-namespace TokenRateGate.Tests;
+namespace TokenRateGate.Core.Tests;
 
 public class OptionsValidatorTests
 {

@@ -3,7 +3,7 @@ using TokenRateGate.Core.Models;
 using TokenRateGate.Core.Queue;
 using Xunit;
 
-namespace TokenRateGate.Tests.Queue;
+namespace TokenRateGate.Core.Tests.Queue;
 
 public class ReservationQueueTests
 {

@@ -146,8 +146,7 @@ public class SafetyTimerTests : IDisposable
             await reservation.DisposeAsync();
         }
 
-        // If we get here without timeout, test passes
-        Assert.True(true, "Rapid cycling should not cause deadlock");
+        // If we get here without timeout, test passes (no assertion needed)
     }
 
     [Fact]
