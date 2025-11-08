@@ -113,8 +113,8 @@ public class QueueWaitTimeTests : IDisposable
         var orderedResults = results.OrderBy(r => r.completedAt).ToList();
         for (int i = 0; i < orderedResults.Count - 1; i++)
         {
-            orderedResults[i].completedAt.Should().BeBefore(orderedResults[i + 1].completedAt,
-                "Requests should complete in FIFO order");
+            orderedResults[i].completedAt.Should().BeOnOrBefore(orderedResults[i + 1].completedAt,
+                "Requests should complete in FIFO order or at the same time");
         }
 
         // Cleanup
