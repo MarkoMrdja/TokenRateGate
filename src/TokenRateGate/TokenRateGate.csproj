@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Package-specific Metadata -->
+    <PackageId>TokenRateGate</PackageId>
+    <Description>Stop HTTP 429 "Rate limit exceeded" errors from Azure OpenAI, OpenAI, and Anthropic APIs. Complete solution with rate limiting, dependency injection, and SDK integrations for OpenAI and Azure. Install this package for everything you need.</Description>
+
+    <!-- Meta-package marker -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+  </PropertyGroup>
+
+  <!-- Include Base + SDK integrations -->
+  <ItemGroup>
+    <ProjectReference Include="..\TokenRateGate.Base\TokenRateGate.Base.csproj" />
+    <ProjectReference Include="..\TokenRateGate.OpenAI\TokenRateGate.OpenAI.csproj" />
+    <ProjectReference Include="..\TokenRateGate.Azure\TokenRateGate.Azure.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -7,16 +7,9 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
-        <!-- Package Metadata -->
+        <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.Abstractions</PackageId>
-        <Version>1.0.0-alpha.1</Version>
-        <Authors>TokenRateGate Contributors</Authors>
-        <Description>Core abstractions for TokenRateGate enabling provider integrations and extensibility</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
-        <RepositoryType>git</RepositoryType>
-        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;abstractions</PackageTags>
+        <Description>Core abstractions and interfaces for TokenRateGate. Enables custom provider integrations and extensibility for LLM rate limiting.</Description>
     </PropertyGroup>
 
 </Project>

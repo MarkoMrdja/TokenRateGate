@@ -7,16 +7,9 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
-        <!-- Package Metadata -->
+        <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.Azure</PackageId>
-        <Version>1.0.0-alpha.1</Version>
-        <Authors>TokenRateGate Contributors</Authors>
-        <Description>Azure OpenAI integration for TokenRateGate with rate-limited client wrappers, managed identity support, and multi-deployment capabilities</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
-        <RepositoryType>git</RepositoryType>
-        <PackageTags>rate-limiting;llm;azure;azure-openai;tokens;api;rate-limit;gpt-4;gpt-3.5;managed-identity</PackageTags>
+        <Description>Azure OpenAI and Azure AI Foundry integration for TokenRateGate. Eliminates HTTP 429 rate limit errors with intelligent TPM/RPM management, managed identity support, and multi-deployment capabilities.</Description>
     </PropertyGroup>
 
     <ItemGroup>

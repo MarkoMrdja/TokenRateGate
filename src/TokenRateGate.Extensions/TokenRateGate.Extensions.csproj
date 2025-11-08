@@ -7,16 +7,9 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
-        <!-- Package Metadata -->
+        <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.Extensions</PackageId>
-        <Version>1.0.0-alpha.1</Version>
-        <Authors>TokenRateGate Contributors</Authors>
-        <Description>Base implementations and extension methods for building rate-limited LLM clients</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
-        <RepositoryType>git</RepositoryType>
-        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;extensions</PackageTags>
+        <Description>Base implementations and extension methods for building rate-limited LLM clients with TokenRateGate. Prevents HTTP 429 errors across OpenAI, Azure OpenAI, and Anthropic APIs.</Description>
     </PropertyGroup>
 
     <ItemGroup>

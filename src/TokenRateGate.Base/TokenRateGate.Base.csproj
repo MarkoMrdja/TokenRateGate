@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net8.0;net9.0</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Package-specific Metadata -->
+    <PackageId>TokenRateGate.Base</PackageId>
+    <Description>Core rate limiting solution for custom LLM providers. Includes engine, DI support, and character-based token estimation. Use this for Anthropic Claude, Google Gemini, or custom APIs. For OpenAI/Azure, install TokenRateGate instead.</Description>
+
+    <!-- Meta-package marker -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+  </PropertyGroup>
+
+  <!-- Include Core + Abstractions + Extensions + DI -->
+  <ItemGroup>
+    <ProjectReference Include="..\TokenRateGate.Core\TokenRateGate.Core.csproj" />
+    <ProjectReference Include="..\TokenRateGate.Abstractions\TokenRateGate.Abstractions.csproj" />
+    <ProjectReference Include="..\TokenRateGate.Extensions\TokenRateGate.Extensions.csproj" />
+    <ProjectReference Include="..\TokenRateGate.Extensions.DependencyInjection\TokenRateGate.Extensions.DependencyInjection.csproj" />
+  </ItemGroup>
+
+</Project>

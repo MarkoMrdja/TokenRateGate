@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on tags like v0.9.0, v1.0.0, etc.
+
+jobs:
+  release:
+    name: Build and Publish to NuGet
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Get all history for release notes
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Extract version from tag
+      id: get_version
+      run: |
+        # Remove 'v' prefix from tag (v0.9.0 -> 0.9.0)
+        VERSION=${GITHUB_REF#refs/tags/v}
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version: $VERSION"
+
+    - name: Update version in Directory.Build.props
+      run: |
+        sed -i "s/<Version>.*<\/Version>/<Version>${{ steps.get_version.outputs.VERSION }}<\/Version>/" Directory.Build.props
+        sed -i "s/<AssemblyVersion>.*<\/AssemblyVersion>/<AssemblyVersion>${{ steps.get_version.outputs.VERSION }}.0<\/AssemblyVersion>/" Directory.Build.props
+        sed -i "s/<FileVersion>.*<\/FileVersion>/<FileVersion>${{ steps.get_version.outputs.VERSION }}.0<\/FileVersion>/" Directory.Build.props
+
+    - name: Restore dependencies
+      run: dotnet restore TokenRateGate.sln
+
+    - name: Build
+      run: dotnet build TokenRateGate.sln --configuration Release --no-restore
+
+    - name: Run tests
+      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal
+
+    - name: Pack NuGet packages
+      run: dotnet pack TokenRateGate.sln --configuration Release --no-build --output ./packages
+
+    - name: List packages
+      run: ls -lh ./packages
+
+    - name: Publish to NuGet.org
+      run: dotnet nuget push "./packages/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+    - name: Generate release notes
+      id: release_notes
+      run: |
+        # Get commits since last tag
+        PREVIOUS_TAG=$(git describe --abbrev=0 --tags $(git rev-list --tags --skip=1 --max-count=1) 2>/dev/null || echo "")
+        echo "PREVIOUS_TAG=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+        if [ -z "$PREVIOUS_TAG" ]; then
+          COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+        else
+          COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+        fi
+        echo "COMMITS<<EOF" >> $GITHUB_OUTPUT
+        echo "$COMMITS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: Release ${{ steps.get_version.outputs.VERSION }}
+        body: |
+          ## TokenRateGate ${{ steps.get_version.outputs.VERSION }}
+
+          ### What's Changed
+          ${{ steps.release_notes.outputs.COMMITS }}
+
+          ### NuGet Packages
+          - [TokenRateGate](https://www.nuget.org/packages/TokenRateGate/${{ steps.get_version.outputs.VERSION }}) - Complete solution with OpenAI/Azure integrations
+          - [TokenRateGate.Base](https://www.nuget.org/packages/TokenRateGate.Base/${{ steps.get_version.outputs.VERSION }}) - Core solution for custom providers
+          - [TokenRateGate.Core](https://www.nuget.org/packages/TokenRateGate.Core/${{ steps.get_version.outputs.VERSION }}) - Rate limiting engine only
+          - [TokenRateGate.Abstractions](https://www.nuget.org/packages/TokenRateGate.Abstractions/${{ steps.get_version.outputs.VERSION }})
+          - [TokenRateGate.Extensions](https://www.nuget.org/packages/TokenRateGate.Extensions/${{ steps.get_version.outputs.VERSION }})
+          - [TokenRateGate.Extensions.DependencyInjection](https://www.nuget.org/packages/TokenRateGate.Extensions.DependencyInjection/${{ steps.get_version.outputs.VERSION }})
+          - [TokenRateGate.OpenAI](https://www.nuget.org/packages/TokenRateGate.OpenAI/${{ steps.get_version.outputs.VERSION }})
+          - [TokenRateGate.Azure](https://www.nuget.org/packages/TokenRateGate.Azure/${{ steps.get_version.outputs.VERSION }})
+
+          ${{ steps.release_notes.outputs.PREVIOUS_TAG && format('**Full Changelog**: https://github.com/{0}/compare/{1}...{2}', github.repository, steps.release_notes.outputs.PREVIOUS_TAG, github.ref_name) || '' }}
+        draft: false
+        prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        files: ./packages/*.nupkg

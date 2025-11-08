@@ -7,16 +7,9 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
-        <!-- Package Metadata -->
+        <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.Extensions.DependencyInjection</PackageId>
-        <Version>1.0.0-alpha.1</Version>
-        <Authors>TokenRateGate Contributors</Authors>
-        <Description>Dependency injection extensions for TokenRateGate enabling easy integration with ASP.NET Core and other .NET applications</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
-        <RepositoryType>git</RepositoryType>
-        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;dependency-injection;di</PackageTags>
+        <Description>Dependency injection extensions for TokenRateGate. Easily integrate LLM rate limiting with ASP.NET Core and .NET applications to prevent HTTP 429 errors.</Description>
     </PropertyGroup>
 
     <ItemGroup>

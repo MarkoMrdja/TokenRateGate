@@ -1,14 +1,34 @@
 # TokenRateGate
 
-A .NET library for intelligent token-based rate limiting of LLM API requests. Prevents exceeding provider limits (tokens-per-minute and requests-per-minute) by managing token reservations, queuing requests, and tracking actual vs. estimated usage.
+**Stop getting HTTP 429 "Rate limit exceeded" errors from Azure OpenAI, OpenAI, and Anthropic Claude APIs.**
+
+TokenRateGate is a .NET library that prevents rate limit errors by intelligently managing your token and request budgets. It tracks both TPM (Tokens-Per-Minute) and RPM (Requests-Per-Minute) limits, automatically queues requests when capacity is full, and ensures you never hit the dreaded 429 error again.
+
+## The Problem
+
+Getting this error when calling LLM APIs?
+
+```
+HTTP 429: Too Many Requests
+Rate limit is exceeded. Try again in X seconds.
+```
+
+This happens when you exceed your API provider's limits:
+- **Azure OpenAI / Azure AI Foundry**: TPM (Tokens-Per-Minute) limits based on your deployment tier
+- **OpenAI API**: Both TPM and RPM (Requests-Per-Minute) limits
+- **Anthropic Claude**: Rate limits based on usage tier
+
+TokenRateGate **prevents these errors** by managing your token budget and queueing requests before they hit the API.
 
 ## Features
 
-- **Token-Based Rate Limiting**: Track and limit by token usage, not just request count
-- **Intelligent Queuing**: Automatically queues requests when capacity is exhausted
-- **Accurate Tracking**: Records actual token usage from API responses for precise accounting
-- **Multiple Providers**: Built-in support for OpenAI and Azure OpenAI
-- **Multi-Tenant**: Factory pattern for managing different rate limits per tenant/model
+- **Prevents HTTP 429 Errors**: Enforces TPM and RPM limits before making API calls
+- **Dual Limiting**: Tracks both token usage (TPM) and request count (RPM) - whichever is more restrictive applies
+- **Smart Queuing**: Automatically queues requests when capacity is full, with configurable timeouts
+- **Safety Buffer**: Configurable buffer to avoid hitting exact limits (prevents edge-case 429s)
+- **Accurate Tracking**: Records actual token usage from API responses for precise capacity management
+- **Multiple Providers**: Built-in support for OpenAI and Azure OpenAI SDKs
+- **Multi-Tenant**: Factory pattern for managing different rate limits per tenant/model/tier
 - **Real-Time Monitoring**: Detailed usage statistics and capacity tracking
 - **Dependency Injection**: First-class DI support with configuration binding
 - **High Performance**: Optimized for throughput with minimal overhead
@@ -16,15 +36,36 @@ A .NET library for intelligent token-based rate limiting of LLM API requests. Pr
 
 ## Installation
 
-```bash
-# Core rate limiting
-dotnet add package TokenRateGate.Core
-dotnet add package TokenRateGate.Extensions.DependencyInjection
+### Option 1: Complete Solution (Recommended)
 
-# For OpenAI integration
+For OpenAI or Azure OpenAI users:
+
+```bash
+dotnet add package TokenRateGate
+```
+
+**Includes:** Everything - base engine, DI, OpenAI integration, Azure integration.
+
+### Option 2: Custom LLM Providers
+
+For Anthropic Claude, Google Gemini, or custom APIs:
+
+```bash
+dotnet add package TokenRateGate.Base
+```
+
+**Includes:** Core engine, DI support, character-based token estimation.
+**Use when:** Building custom integrations without OpenAI/Azure SDKs.
+
+### Option 3: Add Integrations Individually
+
+```bash
+# Base + OpenAI only
+dotnet add package TokenRateGate.Base
 dotnet add package TokenRateGate.OpenAI
 
-# For Azure OpenAI integration
+# Base + Azure only
+dotnet add package TokenRateGate.Base
 dotnet add package TokenRateGate.Azure
 ```
 
@@ -43,9 +84,11 @@ var builder = WebApplication.CreateBuilder(args);
 // Register TokenRateGate with configuration
 builder.Services.AddTokenRateGate(options =>
 {
-    options.TokenLimit = 500000;        // 500K tokens per minute
-    options.WindowSeconds = 60;
-    options.MaxConcurrentRequests = 10  // Limit concurrent API calls
+    options.TokenLimit = 150000;              // 150K tokens per minute (Azure Standard tier)
+    options.WindowSeconds = 60;               // 60-second sliding window
+    options.SafetyBufferPercentage = 0.05;    // 5% safety buffer (avoids hitting exact limit)
+    options.MaxConcurrentRequests = 10;       // Limit concurrent API calls
+    options.MaxRequestsPerMinute = 100;       // Optional: Also enforce RPM limit
 });
 
 var app = builder.Build();
@@ -69,55 +112,78 @@ builder.Services.AddTokenRateGate(
     builder.Configuration.GetSection("TokenRateGate"));
 ```
 
-### 2. Using TokenRateGate Without Client Libraries
+### 2. Using with Custom LLM Providers
 
-Use the core rate limiting directly in your services:
+For APIs without built-in token estimation (Anthropic Claude, Google Gemini, custom LLMs):
 
 ```csharp
-public class MyLlmService
+using TokenRateGate.Core;
+using TokenRateGate.Core.TokenEstimation;
+using TokenRateGate.Abstractions;
+
+public class CustomLlmService
 {
     private readonly ITokenRateGate _rateGate;
-    private readonly ILogger<MyLlmService> _logger;
+    private readonly ITokenEstimator _tokenEstimator;
+    private readonly ILogger<CustomLlmService> _logger;
 
-    public MyLlmService(ITokenRateGate rateGate, ILogger<MyLlmService> logger)
+    public CustomLlmService(ITokenRateGate rateGate, ILogger<CustomLlmService> logger)
     {
         _rateGate = rateGate;
         _logger = logger;
+
+        // Use character-based estimation (4 chars ≈ 1 token for most LLMs)
+        _tokenEstimator = new CharacterBasedTokenEstimator();
     }
 
-    public async Task<string> CallLlmAsync(string prompt, int estimatedOutputTokens = 1000)
+    public async Task<string> CallCustomLlmAsync(string prompt)
     {
-        // Estimate input tokens (simplified - use proper tokenizer in production)
-        int inputTokens = prompt.Length / 4;
+        // Estimate tokens using character-based estimator
+        int estimatedInputTokens = _tokenEstimator.EstimateTokens(prompt);
+        int estimatedOutputTokens = 1000; // Your estimated response size
 
         // Reserve capacity before calling the LLM
         await using var reservation = await _rateGate.ReserveTokensAsync(
-            inputTokens,
+            estimatedInputTokens,
             estimatedOutputTokens);
 
         _logger.LogInformation("Reserved {Tokens} tokens", reservation.ReservedTokens);
 
-        // Make your LLM API call here
-        var response = await CallYourLlmApiAsync(prompt);
+        // Make your custom LLM API call
+        var response = await CallYourCustomApiAsync(prompt);
 
-        // Record actual usage from the response
-        var actualInputTokens = response.Usage.InputTokens;
-        var actualOutputTokens = response.Usage.OutputTokens;
-        reservation.RecordActualUsage(actualInputTokens, actualOutputTokens);
+        // Record actual usage from the response (IMPORTANT for accurate tracking)
+        var actualTotalTokens = response.Usage.TotalTokens;
+        reservation.RecordActualUsage(actualTotalTokens);
 
-        _logger.LogInformation(
-            "Actual usage: {Input} input + {Output} output tokens",
-            actualInputTokens,
-            actualOutputTokens);
+        _logger.LogInformation("Actual usage: {Tokens} tokens", actualTotalTokens);
 
         return response.Content;
     }
 }
 ```
 
-### 3. Using with OpenAI SDK
+**Using CharacterBasedTokenEstimator:**
 
-TokenRateGate integrates seamlessly with the OpenAI SDK:
+```csharp
+// Default: 4 characters per token
+var estimator = new CharacterBasedTokenEstimator();
+int tokens = estimator.EstimateTokens("Hello world!");  // ≈ 3 tokens
+
+// Custom ratio for different languages
+var chineseEstimator = new CharacterBasedTokenEstimator(charactersPerToken: 2.0);
+int chineseTokens = chineseEstimator.EstimateTokens("你好世界");  // Better for non-Latin scripts
+
+// Estimate multiple texts
+var messages = new[] { "System prompt", "User message", "Assistant response" };
+int totalTokens = estimator.EstimateTokens(messages);
+```
+
+### 3. Using with OpenAI SDK (Recommended for OpenAI Users)
+
+TokenRateGate integrates seamlessly with the OpenAI SDK.
+
+**Note:** Logging is optional. The `WithRateLimit()` extension method accepts an optional `ILoggerFactory` parameter for diagnostics. If not provided, logging is disabled.
 
 ```csharp
 using OpenAI.Chat;
@@ -127,16 +193,13 @@ using TokenRateGate.Abstractions;
 public class ChatService
 {
     private readonly ITokenRateGate _rateGate;
-    private readonly ILoggerFactory _loggerFactory;
     private readonly string _apiKey;
 
     public ChatService(
         ITokenRateGate rateGate,
-        ILoggerFactory loggerFactory,
         IConfiguration configuration)
     {
         _rateGate = rateGate;
-        _loggerFactory = loggerFactory;
         _apiKey = configuration["OpenAI:ApiKey"];
     }
 
@@ -144,7 +207,7 @@ public class ChatService
     {
         // Create OpenAI client and wrap with rate limiting
         var client = new ChatClient("gpt-4", _apiKey);
-        var rateLimitedClient = client.WithRateLimit(_rateGate, "gpt-4", _loggerFactory);
+        var rateLimitedClient = client.WithRateLimit(_rateGate, "gpt-4");
 
         // Make rate-limited API call - automatic token tracking!
         var messages = new[] { new UserChatMessage(question) };
@@ -156,7 +219,7 @@ public class ChatService
     public async Task<string> AskQuestionStreamingAsync(string question)
     {
         var client = new ChatClient("gpt-4", _apiKey);
-        var rateLimitedClient = client.WithRateLimit(_rateGate, "gpt-4", _loggerFactory);
+        var rateLimitedClient = client.WithRateLimit(_rateGate, "gpt-4");
 
         var messages = new[] { new UserChatMessage(question) };
         var result = new StringBuilder();
@@ -177,7 +240,9 @@ public class ChatService
 }
 ```
 
-### 4. Using with Azure OpenAI
+### 4. Using with Azure OpenAI (Recommended for Azure Users)
+
+**Note:** Logging is optional. The `WithRateLimit()` extension method accepts an optional `ILoggerFactory` parameter for diagnostics. If not provided, logging is disabled.
 
 ```csharp
 using Azure;
@@ -187,12 +252,10 @@ using TokenRateGate.Azure;
 public class AzureChatService
 {
     private readonly ITokenRateGate _rateGate;
-    private readonly ILoggerFactory _loggerFactory;
 
-    public AzureChatService(ITokenRateGate rateGate, ILoggerFactory loggerFactory)
+    public AzureChatService(ITokenRateGate rateGate)
     {
         _rateGate = rateGate;
-        _loggerFactory = loggerFactory;
     }
 
     public async Task<string> AskQuestionAsync(string question)
@@ -205,8 +268,7 @@ public class AzureChatService
         var rateLimitedClient = azureClient.WithRateLimit(
             _rateGate,
             deploymentName: "my-gpt4-deployment",
-            modelName: "gpt-4",
-            _loggerFactory);
+            modelName: "gpt-4");
 
         var messages = new[] { new UserChatMessage(question) };
         var response = await rateLimitedClient.CompleteChatAsync(messages);
@@ -240,14 +302,10 @@ builder.Services.AddNamedTokenRateGate("premium-tier", options =>
 public class MultiTenantChatService
 {
     private readonly ITokenRateGateFactory _factory;
-    private readonly ILoggerFactory _loggerFactory;
 
-    public MultiTenantChatService(
-        ITokenRateGateFactory factory,
-        ILoggerFactory loggerFactory)
+    public MultiTenantChatService(ITokenRateGateFactory factory)
     {
         _factory = factory;
-        _loggerFactory = loggerFactory;
     }
 
     public async Task<string> AskQuestionAsync(string question, string tier)
@@ -256,7 +314,7 @@ public class MultiTenantChatService
         var rateGate = _factory.GetOrCreate(tier);
 
         var client = new ChatClient("gpt-4", "your-api-key");
-        var rateLimitedClient = client.WithRateLimit(rateGate, "gpt-4", _loggerFactory);
+        var rateLimitedClient = client.WithRateLimit(rateGate, "gpt-4");
 
         var messages = new[] { new UserChatMessage(question) };
         var response = await rateLimitedClient.CompleteChatAsync(messages);
@@ -289,7 +347,7 @@ using var loggerFactory = LoggerFactory.Create(builder =>
     builder.AddConsole();
 });
 
-var rateGate = new TokenRateGate.Core.TokenRateGate(options, loggerFactory);
+var rateGate = new TokenRateGate(options, loggerFactory);
 
 // Use with OpenAI
 var client = new ChatClient("gpt-4", "your-api-key");
@@ -329,13 +387,14 @@ public class MonitoringService
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `TokenLimit` | 500000 | Maximum tokens per window |
-| `WindowSeconds` | 60 | Time window in seconds |
-| `SafetyBufferPercentage` | 0.05 (5%) | Percentage of TokenLimit reserved as safety buffer |
-| `MaxConcurrentRequests` | 1000 | Maximum concurrent API requests |
-| `MaxRequestsPerMinute` | int.MaxValue | RPM limit (in addition to token limit) |
-| `MaxWaitTime` | 2 minutes | Maximum time to wait when queued |
-| `OutputEstimationStrategy` | FixedMultiplier | How to estimate output tokens |
+| `TokenLimit` | 500000 | Maximum tokens per window (TPM limit) |
+| `WindowSeconds` | 60 | Time window in seconds for token tracking |
+| `SafetyBufferPercentage` | 0.05 (5%) | Percentage of TokenLimit reserved as safety buffer<br>Effective limit = `TokenLimit * (1 - SafetyBufferPercentage)` |
+| `MaxConcurrentRequests` | 1000 | Maximum concurrent active reservations |
+| `MaxRequestsPerMinute` | null | Optional RPM limit (enforced in addition to token limit)<br>If both are configured, whichever is more restrictive applies |
+| `RequestWindowSeconds` | 120 | Time window for RPM tracking (default: max(120s, 2×WindowSeconds)) |
+| `MaxWaitTime` | 2 minutes | Maximum time a request waits in queue before timing out |
+| `OutputEstimationStrategy` | FixedMultiplier | How to estimate output tokens when not provided |
 | `OutputMultiplier` | 0.5 | Multiplier for FixedMultiplier strategy |
 | `DefaultOutputTokens` | 1000 | Fixed output for FixedAmount strategy |
 
@@ -347,13 +406,25 @@ public class MonitoringService
 
 ## How It Works
 
-1. **Token Estimation**: Before making an API call, TokenRateGate estimates input and output tokens using tiktoken
-2. **Capacity Check**: Checks if estimated tokens fit within the current limit
-3. **Reservation**: Reserves capacity for the request (blocks if capacity unavailable)
-4. **API Call**: Executes the LLM API call
-5. **Actual Usage**: Extracts actual token usage from the response
-6. **Recording**: Records actual usage and releases the reservation
-7. **Sliding Window**: Old usage automatically expires after the configured window
+TokenRateGate uses a **dual-component capacity system**:
+
+**Current Capacity = Historical Usage + Active Reservations**
+
+1. **Token Estimation**: Before making an API call, estimate input and output tokens
+2. **Capacity Check**: Checks both:
+   - **TPM Check**: `(Historical Usage + Active Reservations + Requested Tokens) <= (TokenLimit - SafetyBuffer)`
+   - **RPM Check**: `Current Request Count < MaxRequestsPerMinute`
+   - **Both must pass** - whichever is more restrictive applies
+3. **Reservation**: If capacity available, reserves tokens immediately. Otherwise, queues the request with timeout.
+4. **API Call**: Make your LLM API call
+5. **Record Actual Usage** (Optional but recommended): Call `RecordActualUsage()` with actual tokens from response
+   - If recorded: Actual usage tracked in sliding window for WindowSeconds
+   - If not recorded: Reserved capacity freed immediately on disposal
+6. **Disposal**: When `using` block ends, reservation is released and queued requests are processed
+7. **Sliding Window Cleanup**:
+   - Token timeline cleaned up every WindowSeconds
+   - Request timeline cleaned up every RequestWindowSeconds (separate window for RPM)
+   - Stale reservations removed after 10x WindowSeconds
 
 ## Advanced Topics
 
@@ -423,11 +494,20 @@ dotnet test --filter "Category=Performance"
 
 ## Packages
 
-- **TokenRateGate.Core**: Core rate limiting engine
-- **TokenRateGate.Abstractions**: Interfaces and abstractions
-- **TokenRateGate.OpenAI**: OpenAI SDK integration
-- **TokenRateGate.Azure**: Azure OpenAI SDK integration
-- **TokenRateGate.Extensions.DependencyInjection**: DI extensions and factory
+### User-Facing Packages
+
+- **TokenRateGate** ⭐: Complete solution - includes Base + OpenAI + Azure (recommended for most users)
+- **TokenRateGate.Base**: Core engine + DI + Extensions (for custom LLM providers)
+- **TokenRateGate.OpenAI**: OpenAI SDK integration (can be used with Base)
+- **TokenRateGate.Azure**: Azure OpenAI SDK integration (can be used with Base)
+
+### Internal Packages (Included in Base)
+
+You don't need to install these individually - they're included in TokenRateGate.Base:
+- TokenRateGate.Core: Core rate limiting engine
+- TokenRateGate.Abstractions: Interfaces and abstractions
+- TokenRateGate.Extensions: Base implementations
+- TokenRateGate.Extensions.DependencyInjection: DI support
 
 ## Contributing
 
@@ -440,7 +520,9 @@ Contributions are welcome! Please:
 
 ## License
 
-[Your License Here]
+MIT License - Copyright © 2025 Marko Mrdja
+
+See [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 

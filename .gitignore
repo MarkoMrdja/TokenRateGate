@@ -18,6 +18,9 @@
 CLAUDE.md
 MIGRATION.md
 SECURITY_REVIEW.md
+QA_REVIEW_*.md
+TESTING_GUIDE.md
+TOKENRATEGATE_RULEBOOK.md
 .beads/
 
 # User-specific files (MonoDevelop/Xamarin Studio)

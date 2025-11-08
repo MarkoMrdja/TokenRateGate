@@ -7,16 +7,9 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
-        <!-- Package Metadata -->
+        <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.OpenAI</PackageId>
-        <Version>1.0.0-alpha.1</Version>
-        <Authors>TokenRateGate Contributors</Authors>
-        <Description>OpenAI integration for TokenRateGate with tiktoken-based token estimation and rate-limited client wrappers</Description>
-        <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageProjectUrl>https://github.com/markomrdja/TokenRateGate</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/markomrdja/TokenRateGate</RepositoryUrl>
-        <RepositoryType>git</RepositoryType>
-        <PackageTags>rate-limiting;llm;openai;tokens;api;rate-limit;tiktoken;gpt-4;gpt-3.5</PackageTags>
+        <Description>OpenAI SDK integration for TokenRateGate. Prevents HTTP 429 errors with tiktoken-based token estimation and rate-limited ChatClient wrappers for GPT-4, GPT-3.5, and other OpenAI models.</Description>
     </PropertyGroup>
 
     <ItemGroup>
