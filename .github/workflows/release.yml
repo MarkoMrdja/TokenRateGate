@@ -51,7 +51,13 @@ jobs:
       run: ls -lh ./packages
 
     - name: Publish to NuGet.org
-      run: dotnet nuget push "./packages/*.nupkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      run: |
+        # Push only .nupkg files, exclude .snupkg (symbol packages)
+        for pkg in ./packages/*.nupkg; do
+          if [[ $pkg != *.snupkg ]]; then
+            dotnet nuget push "$pkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+          fi
+        done
 
     - name: Generate release notes
       id: release_notes

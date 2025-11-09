@@ -37,8 +37,9 @@
     <!-- Source Link Support -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <IncludeSymbols>true</IncludeSymbols>
-    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Symbol packages disabled until .pdb generation is configured -->
+    <!-- <IncludeSymbols>true</IncludeSymbols> -->
+    <!-- <SymbolPackageFormat>snupkg</SymbolPackageFormat> -->
 
     <!-- Build Settings -->
     <LangVersion>latest</LangVersion>
