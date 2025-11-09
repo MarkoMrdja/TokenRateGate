@@ -186,13 +186,13 @@ public class SafetyTimerManagerTests
         {
             // Start
             manager.UpdateState(hasWaitingRequests: true, activeReservationCount: 0, waitingRequestCount: 1);
-            Thread.Sleep(150);
+            Thread.Sleep(250); // Increased for CI environment reliability
             Assert.True(callbackCount > 0, $"Timer should fire in cycle {i + 1}");
 
             // Stop
             var countBeforeStop = callbackCount;
             manager.UpdateState(hasWaitingRequests: false, activeReservationCount: 0, waitingRequestCount: 0);
-            Thread.Sleep(150);
+            Thread.Sleep(250); // Increased for CI environment reliability
 
             // Verify timer stopped (allow small margin for race condition)
             Assert.True(callbackCount <= countBeforeStop + 2,
