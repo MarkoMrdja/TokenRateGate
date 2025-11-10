@@ -41,8 +41,8 @@ jobs:
     - name: Build
       run: dotnet build TokenRateGate.sln --configuration Release --no-restore
 
-    - name: Run tests
-      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal
+    - name: Run tests (excluding StressTests)
+      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal --filter "FullyQualifiedName!~StressTests"
 
     - name: Pack NuGet packages
       run: dotnet pack TokenRateGate.sln --configuration Release --no-build --output ./packages

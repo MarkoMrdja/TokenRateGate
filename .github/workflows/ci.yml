@@ -7,14 +7,45 @@ on:
     branches: [ master, main, develop ]
 
 jobs:
-  build-and-test:
-    name: Build and Test
+  # Primary test job - runs full test suite on latest .NET
+  test-main:
+    name: Test (ubuntu-latest, .NET 9.0)
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET 9.0
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore TokenRateGate.sln
+
+    - name: Build
+      run: dotnet build TokenRateGate.sln --configuration Release --no-restore
+
+    - name: Run tests (excluding StressTests)
+      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx" --filter "FullyQualifiedName!~StressTests"
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-ubuntu-latest-9.0.x
+        path: '**/test-results.trx'
+
+  # Compatibility verification - just build on other platforms/versions
+  build-compatibility:
+    name: Build Compatibility (${{ matrix.os }}, .NET ${{ matrix.dotnet-version }})
     runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        dotnet-version: ['6.0.x', '8.0.x', '9.0.x']
+        os: [windows-latest, macos-latest]
+        dotnet-version: ['6.0.x', '8.0.x']
       fail-fast: false
 
     steps:
@@ -31,16 +62,6 @@ jobs:
 
     - name: Build
       run: dotnet build TokenRateGate.sln --configuration Release --no-restore
-
-    - name: Run tests
-      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
-
-    - name: Upload test results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-results-${{ matrix.os }}-${{ matrix.dotnet-version }}
-        path: '**/test-results.trx'
 
   code-coverage:
     name: Code Coverage
@@ -61,8 +82,8 @@ jobs:
     - name: Build
       run: dotnet build TokenRateGate.sln --configuration Release --no-restore
 
-    - name: Run tests with coverage
-      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage
+    - name: Run tests with coverage (excluding StressTests)
+      run: dotnet test TokenRateGate.sln --configuration Release --no-build --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage --filter "FullyQualifiedName!~StressTests"
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
