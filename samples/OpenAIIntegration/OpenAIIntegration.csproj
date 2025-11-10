@@ -18,6 +18,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Sample project - not packable -->
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>

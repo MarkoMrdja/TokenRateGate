@@ -9,7 +9,7 @@
 
         <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.Abstractions</PackageId>
-        <Description>Core abstractions and interfaces for TokenRateGate. Enables custom provider integrations and extensibility for LLM rate limiting.</Description>
+        <Description>Core abstractions for TokenRateGate. Install TokenRateGate.Base or TokenRateGate for easier setup.</Description>
     </PropertyGroup>
 
 </Project>

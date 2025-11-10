@@ -9,7 +9,7 @@
 
         <!-- Package-specific Metadata -->
         <PackageId>TokenRateGate.Extensions.DependencyInjection</PackageId>
-        <Description>Dependency injection extensions for TokenRateGate. Easily integrate LLM rate limiting with ASP.NET Core and .NET applications to prevent HTTP 429 errors.</Description>
+        <Description>Dependency injection extensions for TokenRateGate. Install TokenRateGate.Base or TokenRateGate for easier setup.</Description>
     </PropertyGroup>
 
     <ItemGroup>

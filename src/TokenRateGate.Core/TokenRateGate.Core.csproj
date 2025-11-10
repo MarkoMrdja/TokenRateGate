@@ -7,7 +7,7 @@
 
     <!-- Package-specific Metadata -->
     <PackageId>TokenRateGate.Core</PackageId>
-    <Description>Stop HTTP 429 "Rate limit exceeded" errors from LLM APIs. Complete rate limiting solution with TPM/RPM enforcement, dependency injection support, and character-based token estimation. Use this for custom LLM providers or without SDK integrations. For OpenAI/Azure, install TokenRateGate instead.</Description>
+    <Description>Core rate limiting engine for TokenRateGate. Install TokenRateGate.Base or TokenRateGate for easier setup.</Description>
   </PropertyGroup>
 
   <ItemGroup>
