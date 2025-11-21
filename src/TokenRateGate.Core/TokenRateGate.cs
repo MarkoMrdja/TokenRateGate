@@ -164,9 +164,18 @@ public class TokenRateGate : ITokenRateGate, IDisposable
     /// <exception cref="OperationCanceledException">
     /// Thrown if the operation is cancelled via the cancellationToken or exceeds <see cref="TokenRateGateOptions.MaxWaitTime"/>.
     /// </exception>
+    /// <exception cref="TimeoutException">
+    /// Thrown if waiting for capacity exceeds <see cref="TokenRateGateOptions.MaxWaitTime"/>.
+    /// </exception>
     /// <remarks>
     /// This method may queue the request if capacity is currently exhausted. The request will automatically
     /// proceed once capacity becomes available within the configured <see cref="TokenRateGateOptions.MaxWaitTime"/>.
+    ///
+    /// The timeout behavior is as follows:
+    /// 1. First, waits for the concurrency semaphore (no timeout, unlimited wait unless user cancels)
+    /// 2. Then, waits in the capacity queue with <see cref="TokenRateGateOptions.MaxWaitTime"/> timeout
+    ///
+    /// This ensures the timeout only applies to waiting for token capacity, not waiting for concurrent request slots.
     /// Always call <see cref="TokenReservation.RecordActualUsage"/> after your API call completes to ensure
     /// accurate capacity tracking.
     /// </remarks>
@@ -179,40 +188,39 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         ValidateRequestCapacity(totalEstimatedTokens);
 
+        // Wait for concurrency semaphore first (no timeout, only user cancellation)
+        await _concurrencyLimiter.WaitAsync(cancellationToken);
+
+        // Now start the timeout for capacity queue waiting
         var reservationStartTime = _clock.UtcNow;
         var (timeoutCts, combinedCts, effectiveCancellationToken) = CreateCancellationTokens(cancellationToken);
 
+        bool semaphoreAcquired = true;
         try
         {
-            await _concurrencyLimiter.WaitAsync(effectiveCancellationToken);
+            // Fast path: try immediate reservation
+            var (immediateReservation, stillAcquired) = TryImmediateReservation(totalEstimatedTokens, inputTokens);
+            semaphoreAcquired = stillAcquired;
 
-            bool semaphoreAcquired = true;
-            try
-            {
-                // Fast path: try immediate reservation
-                var (immediateReservation, stillAcquired) = TryImmediateReservation(totalEstimatedTokens, inputTokens);
-                semaphoreAcquired = stillAcquired;
+            if (immediateReservation != null)
+                return immediateReservation;
 
-                if (immediateReservation != null)
-                    return immediateReservation;
+            // Slow path: queue the request and wait
+            var (queuedReservation, finallyAcquired) = await QueueAndWaitForReservation(
+                totalEstimatedTokens,
+                inputTokens,
+                effectiveCancellationToken,
+                cancellationToken,
+                reservationStartTime);
 
-                // Slow path: queue the request and wait
-                var (queuedReservation, finallyAcquired) = await QueueAndWaitForReservation(
-                    totalEstimatedTokens,
-                    inputTokens,
-                    effectiveCancellationToken,
-                    cancellationToken,
-                    reservationStartTime);
-
-                semaphoreAcquired = finallyAcquired;
-                return queuedReservation;
-            }
-            catch
-            {
-                if (semaphoreAcquired)
-                    _concurrencyLimiter.Release();
-                throw;
-            }
+            semaphoreAcquired = finallyAcquired;
+            return queuedReservation;
+        }
+        catch
+        {
+            if (semaphoreAcquired)
+                _concurrencyLimiter.Release();
+            throw;
         }
         finally
         {

@@ -393,7 +393,7 @@ public class MonitoringService
 | `MaxConcurrentRequests` | 1000 | Maximum concurrent active reservations |
 | `MaxRequestsPerMinute` | null | Optional RPM limit (enforced in addition to token limit)<br>If both are configured, whichever is more restrictive applies |
 | `RequestWindowSeconds` | 120 | Time window for RPM tracking (default: max(120s, 2×WindowSeconds)) |
-| `MaxWaitTime` | 2 minutes | Maximum time a request waits in queue before timing out |
+| `MaxWaitTime` | null (unlimited) | Maximum time to wait for capacity in the queue before timing out<br>**Note:** Only applies to capacity queue waiting, NOT semaphore waiting<br>Set to null for unlimited waiting (recommended for most use cases) |
 | `OutputEstimationStrategy` | FixedMultiplier | How to estimate output tokens when not provided |
 | `OutputMultiplier` | 0.5 | Multiplier for FixedMultiplier strategy |
 | `DefaultOutputTokens` | 1000 | Fixed output for FixedAmount strategy |

@@ -833,4 +833,563 @@ public class EdgeCaseValidationTests
     }
 
     #endregion
+
+    #region Disposal State Edge Cases
+
+    [Fact]
+    public async Task ReserveTokensAsync_AfterDisposal_ShouldThrowObjectDisposedException()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60
+        };
+        var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - dispose the gate
+        gate.Dispose();
+
+        // Assert - attempting to reserve tokens should throw
+        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+        {
+            await gate.ReserveTokensAsync(100, 100);
+        });
+    }
+
+    [Fact]
+    public void GetUsageStats_AfterDisposal_ShouldNotThrow()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60
+        };
+        var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - dispose the gate
+        gate.Dispose();
+
+        // Assert - GetUsageStats should work after disposal (read-only operation)
+        var act = () => gate.GetUsageStats();
+        act.Should().NotThrow("GetUsageStats is a read-only operation");
+    }
+
+    [Fact]
+    public async Task Disposal_WithWaitingRequests_ShouldCancelThem()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 1000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0,
+            MaxWaitTime = TimeSpan.FromSeconds(30)
+        };
+        var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Block capacity
+        var blocker = await gate.ReserveTokensAsync(1000, 0);
+
+        // Queue a request
+        var queuedTask = gate.ReserveTokensAsync(500, 0);
+        await Task.Delay(100);
+
+        queuedTask.IsCompleted.Should().BeFalse("Request should be queued");
+
+        // Act - dispose the gate while request is queued
+        gate.Dispose();
+
+        // Assert - queued request should complete or be cancelled
+        await Task.Delay(200);
+
+        // The task should be either cancelled or faulted (not still waiting)
+        queuedTask.IsCompleted.Should().BeTrue("Queued requests should not remain waiting after disposal");
+
+        // Cleanup blocker
+        try
+        {
+            await blocker.DisposeAsync();
+        }
+        catch
+        {
+            // Ignore disposal errors after gate is disposed
+        }
+    }
+
+    [Fact]
+    public void Disposal_ShouldBeIdempotent()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60
+        };
+        var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - dispose multiple times
+        gate.Dispose();
+        gate.Dispose();
+        gate.Dispose();
+
+        // Assert - should not throw
+        // (test passes if no exception thrown)
+    }
+
+    #endregion
+
+    #region Cancellation Token Edge Cases
+
+    [Fact]
+    public async Task ReserveTokensAsync_WithUserCancellation_ShouldThrowOperationCanceledException()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 1000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Block capacity
+        var blocker = await gate.ReserveTokensAsync(1000, 0);
+
+        // Act - queue a request with cancellation token
+        using var cts = new CancellationTokenSource();
+        var queuedTask = gate.ReserveTokensAsync(500, 0, cts.Token);
+
+        await Task.Delay(50); // Let it queue
+        cts.Cancel(); // Cancel it
+
+        // Assert - TaskCanceledException is a subclass of OperationCanceledException
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await queuedTask;
+        });
+        exception.Should().NotBeNull();
+
+        // Cleanup
+        await blocker.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_MaxWaitTimeExpired_ShouldThrowTimeoutException()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 1000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0,
+            MaxWaitTime = TimeSpan.FromMilliseconds(200) // Very short timeout
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Block capacity
+        var blocker = await gate.ReserveTokensAsync(1000, 0);
+
+        // Act - queue a request that will timeout
+        var queuedTask = gate.ReserveTokensAsync(500, 0);
+
+        // Assert - should timeout
+        var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
+        {
+            await queuedTask;
+        });
+
+        exception.Message.Should().Contain("Unable to acquire token capacity");
+        exception.Message.Should().Contain("Maximum wait time");
+
+        // Cleanup
+        await blocker.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_UserCancellationVsTimeout_ShouldPreferUserCancellation()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 1000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0,
+            MaxWaitTime = TimeSpan.FromSeconds(10) // Long timeout
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Block capacity
+        var blocker = await gate.ReserveTokensAsync(1000, 0);
+
+        // Act - queue with user cancellation that fires before timeout
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        var queuedTask = gate.ReserveTokensAsync(500, 0, cts.Token);
+
+        // Assert - should throw OperationCanceledException (not TimeoutException)
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await queuedTask;
+        });
+
+        // Cleanup
+        await blocker.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_MultipleConcurrentCancellations_ShouldHandleGracefully()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 1000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0,
+            MaxConcurrentRequests = 20
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Block capacity
+        var blocker = await gate.ReserveTokensAsync(1000, 0);
+
+        // Act - queue multiple requests and cancel them all
+        var tasks = new List<Task>();
+        var ctsList = new List<CancellationTokenSource>();
+
+        for (int i = 0; i < 10; i++)
+        {
+            var cts = new CancellationTokenSource();
+            ctsList.Add(cts);
+            tasks.Add(gate.ReserveTokensAsync(100, 0, cts.Token));
+        }
+
+        await Task.Delay(50); // Let them queue
+
+        // Cancel all
+        foreach (var cts in ctsList)
+        {
+            cts.Cancel();
+        }
+
+        // Assert - all should be cancelled
+        foreach (var task in tasks)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                await task;
+            });
+        }
+
+        // Cleanup
+        await blocker.DisposeAsync();
+        foreach (var cts in ctsList)
+        {
+            cts.Dispose();
+        }
+    }
+
+    #endregion
+
+    #region Exact Boundary Values
+
+    [Fact]
+    public async Task ReserveTokensAsync_AtExactEffectiveLimit_ShouldSucceed()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.1, // Effective limit = 9000
+            MaxConcurrentRequests = 10
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - request exactly at effective limit
+        await using var reservation = await gate.ReserveTokensAsync(9000, 0);
+
+        // Assert
+        reservation.Should().NotBeNull();
+        reservation.ReservedTokens.Should().Be(9000);
+
+        var stats = gate.GetUsageStats();
+        stats.AvailableTokens.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_OneAboveEffectiveLimit_ShouldThrowInvalidOperationException()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 10,
+            SafetyBufferPercentage = 0.1, // Effective limit = 9000
+            MaxConcurrentRequests = 10
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act & Assert - request 1 above effective limit should throw InvalidOperationException
+        // (request can never be fulfilled with current configuration)
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await gate.ReserveTokensAsync(9001, 0);
+        });
+
+        exception.Message.Should().Contain("exceeds effective capacity");
+        exception.Message.Should().Contain("9,001");
+        exception.Message.Should().Contain("9,000");
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_OneBelowEffectiveLimit_ShouldSucceed()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.1, // Effective limit = 9000
+            MaxConcurrentRequests = 10
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - request 1 below effective limit
+        await using var reservation = await gate.ReserveTokensAsync(8999, 0);
+
+        // Assert
+        reservation.Should().NotBeNull();
+        var stats = gate.GetUsageStats();
+        stats.AvailableTokens.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_AtExactMaxRequestsPerMinute_ShouldQueue()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 100_000,  // High token limit
+            WindowSeconds = 60,
+            MaxRequestsPerMinute = 5,  // Exactly 5 requests allowed
+            RequestWindowSeconds = 3,  // Short window for fast testing
+            SafetyBufferPercentage = 0.0,
+            MaxConcurrentRequests = 20,
+            MaxWaitTime = TimeSpan.FromMilliseconds(500)
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - make exactly 5 requests (at limit)
+        var reservations = new List<Core.Models.TokenReservation>();
+        for (int i = 0; i < 5; i++)
+        {
+            reservations.Add(await gate.ReserveTokensAsync(100, 0));
+        }
+
+        gate.GetCurrentRequestCount().Should().Be(5, "Should have exactly 5 requests");
+
+        // 6th request should timeout (RPM limit reached)
+        await Assert.ThrowsAsync<TimeoutException>(async () =>
+        {
+            await gate.ReserveTokensAsync(100, 0);
+        });
+
+        // Cleanup
+        foreach (var res in reservations)
+        {
+            await res.DisposeAsync();
+        }
+    }
+
+    #endregion
+
+    #region Numeric Edge Cases
+
+    [Fact]
+    public async Task ReserveTokensAsync_WithSingleToken_ShouldSucceed()
+    {
+        // Arrange
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - reserve just 1 token
+        await using var reservation = await gate.ReserveTokensAsync(1, 0);
+
+        // Assert
+        reservation.Should().NotBeNull();
+        reservation.ReservedTokens.Should().Be(1);
+
+        var stats = gate.GetUsageStats();
+        stats.TotalReserved.Should().Be(1);
+        stats.AvailableTokens.Should().Be(9999);
+    }
+
+    [Fact]
+    public async Task ReserveTokensAsync_WithIntMaxMinusOne_ShouldHandleCorrectly()
+    {
+        // Arrange - large but not max value
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = int.MaxValue - 1,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.0
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - reserve tokens successfully
+        await using var reservation = await gate.ReserveTokensAsync(1000, 0);
+
+        // Assert
+        reservation.Should().NotBeNull();
+        var stats = gate.GetUsageStats();
+        stats.TokenLimit.Should().Be(int.MaxValue - 1);
+    }
+
+    [Fact]
+    public void OutputMultiplier_GreaterThanOne_ShouldCalculateCorrectly()
+    {
+        // Arrange - multiplier > 1.0 (expecting more output than input)
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 100_000,
+            WindowSeconds = 60,
+            OutputEstimationStrategy = OutputEstimationStrategy.FixedMultiplier,
+            OutputMultiplier = 2.0, // 2x multiplier
+            SafetyBufferPercentage = 0.0
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - reserve without providing output estimate
+        var reservation = gate.ReserveTokensAsync(1000, null).Result;
+
+        // Assert - should reserve 1000 + (1000 * 2.0) = 3000
+        reservation.ReservedTokens.Should().Be(3000);
+
+        // Cleanup
+        reservation.DisposeAsync().AsTask().Wait();
+    }
+
+    [Fact]
+    public void OutputMultiplier_TenTimes_ShouldCalculateCorrectly()
+    {
+        // Arrange - very high multiplier
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 1_000_000,
+            WindowSeconds = 60,
+            OutputEstimationStrategy = OutputEstimationStrategy.FixedMultiplier,
+            OutputMultiplier = 10.0, // 10x multiplier
+            SafetyBufferPercentage = 0.0
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act
+        var reservation = gate.ReserveTokensAsync(1000, null).Result;
+
+        // Assert - should reserve 1000 + (1000 * 10.0) = 11000
+        reservation.ReservedTokens.Should().Be(11_000);
+
+        // Cleanup
+        reservation.DisposeAsync().AsTask().Wait();
+    }
+
+    #endregion
+
+    #region Extreme Configuration Edge Cases
+
+    [Fact]
+    public async Task ExtremeConfiguration_MaxConcurrentRequests_One_ShouldSerialize()
+    {
+        // Arrange - extreme serialization
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 100_000,
+            WindowSeconds = 60,
+            MaxConcurrentRequests = 1, // Only 1 concurrent request allowed
+            SafetyBufferPercentage = 0.0
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - first request should succeed immediately
+        var r1 = await gate.ReserveTokensAsync(1000, 0);
+
+        // Second request should wait for semaphore
+        var r2Task = gate.ReserveTokensAsync(1000, 0);
+        await Task.Delay(50);
+
+        r2Task.IsCompleted.Should().BeFalse("Second request should wait due to MaxConcurrentRequests=1");
+
+        // Release first
+        await r1.DisposeAsync();
+
+        // Now second should complete
+        var r2 = await r2Task;
+        r2.Should().NotBeNull();
+
+        await r2.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ExtremeConfiguration_MaxRequestsPerMinute_One_ShouldBlock()
+    {
+        // Arrange - extreme RPM limiting
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 100_000,
+            WindowSeconds = 60,
+            MaxRequestsPerMinute = 1, // Only 1 request per minute
+            RequestWindowSeconds = 2, // Short window for testing
+            SafetyBufferPercentage = 0.0,
+            MaxConcurrentRequests = 10,
+            MaxWaitTime = TimeSpan.FromMilliseconds(500)
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act - first request succeeds
+        var r1 = await gate.ReserveTokensAsync(1000, 0);
+
+        // Second request should timeout (RPM limit of 1)
+        await Assert.ThrowsAsync<TimeoutException>(async () =>
+        {
+            await gate.ReserveTokensAsync(1000, 0);
+        });
+
+        await r1.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ExtremeConfiguration_SafetyBuffer_99Percent_ShouldLeaveMinimalCapacity()
+    {
+        // Arrange - extreme safety buffer (only 1% effective capacity)
+        var options = new TokenRateGateOptions
+        {
+            TokenLimit = 10_000,
+            WindowSeconds = 60,
+            SafetyBufferPercentage = 0.99, // 99% buffer = only 100 tokens effective
+            MaxConcurrentRequests = 10
+        };
+        using var gate = new TokenRateGate(options, NullLogger<TokenRateGate>.Instance);
+
+        // Act
+        var stats = gate.GetUsageStats();
+
+        // Assert
+        stats.TokenLimit.Should().Be(10_000);
+        stats.EffectiveCapacity.Should().Be(100, "99% buffer leaves only 1% effective");
+
+        // Should be able to reserve up to effective capacity
+        await using var reservation = await gate.ReserveTokensAsync(100, 0);
+        reservation.Should().NotBeNull();
+
+        var stats2 = gate.GetUsageStats();
+        stats2.AvailableTokens.Should().Be(0);
+    }
+
+    #endregion
 }

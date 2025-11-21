@@ -54,15 +54,16 @@ public class TokenRateGateOptions
     #endregion
     
     /// <summary>
-    /// Maximum time a request can wait for capacity before timing out.
-    /// Set to null to allow requests to wait indefinitely (true "gate" behavior - all requests eventually succeed).
+    /// Maximum time a request can wait in the capacity queue before timing out.
+    /// Set to null to allow unlimited queue waiting (true "gate" behavior - all requests eventually succeed).
     /// Set to a TimeSpan value to fail requests that can't acquire capacity within that time (circuit breaker pattern).
-    /// Default: 2 minutes.
+    /// Default: null (unlimited waiting).
     ///
-    /// Note: This timeout applies from the moment ReserveTokensAsync() is called, including time waiting
-    /// for the concurrency semaphore AND time waiting in the capacity queue.
+    /// Note: This timeout applies ONLY to the time spent waiting for token capacity to become available.
+    /// It does NOT include time waiting for the concurrency semaphore (controlled by MaxConcurrentRequests).
+    /// Waiting for the concurrency semaphore is unlimited unless the user provides a cancellation token.
     /// </summary>
-    public TimeSpan? MaxWaitTime { get; set; } = TimeSpan.FromMinutes(2);
+    public TimeSpan? MaxWaitTime { get; set; } = null;
 
     #region Token estimation
 
