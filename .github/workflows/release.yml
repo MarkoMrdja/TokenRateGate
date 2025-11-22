@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*.*.*'  # Triggers on tags like v0.9.0, v1.0.0, etc.
 
+permissions:
+  contents: write  # Required to create GitHub releases
+
 jobs:
   release:
     name: Build and Publish to NuGet
