@@ -103,6 +103,7 @@ public static class ServiceCollectionExtensions
             throw new ArgumentNullException(nameof(services));
 
         services.TryAddSingleton<TokenRateGateFactory>();
+        services.TryAddSingleton<TokenRateGate.Abstractions.ITokenRateGateFactory>(sp => sp.GetRequiredService<TokenRateGateFactory>());
 
         if (configureFactory != null)
         {
@@ -138,6 +139,7 @@ public static class ServiceCollectionExtensions
 
         // Ensure factory is registered
         services.TryAddSingleton<TokenRateGateFactory>();
+        services.TryAddSingleton<TokenRateGate.Abstractions.ITokenRateGateFactory>(sp => sp.GetRequiredService<TokenRateGateFactory>());
 
         return services;
     }
@@ -167,6 +169,7 @@ public static class ServiceCollectionExtensions
 
         // Ensure factory is registered
         services.TryAddSingleton<TokenRateGateFactory>();
+        services.TryAddSingleton<TokenRateGate.Abstractions.ITokenRateGateFactory>(sp => sp.GetRequiredService<TokenRateGateFactory>());
 
         return services;
     }

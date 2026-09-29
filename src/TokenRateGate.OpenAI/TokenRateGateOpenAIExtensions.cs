@@ -164,50 +164,57 @@ internal static class TokenRateGateOpenAIExtensions
         var chunkCount = 0;
 
         // Step 3: Stream response chunks
-        await foreach (var chunk in client.CompleteChatStreamingAsync(messages, options, cancellationToken)
-            .ConfigureAwait(false)
-            .WithCancellation(cancellationToken))
+        try
         {
-            chunkCount++;
+            await foreach (var chunk in client.CompleteChatStreamingAsync(messages, options, cancellationToken)
+                .ConfigureAwait(false)
+                .WithCancellation(cancellationToken))
+            {
+                chunkCount++;
 
-            // Step 4: Try to extract usage from each chunk (typically only in final chunk)
-            var (inputFromChunk, outputFromChunk) = helper.ExtractStreamingUsage(chunk);
+                // Step 4: Try to extract usage from each chunk (typically only in final chunk)
+                var (inputFromChunk, outputFromChunk) = helper.ExtractStreamingUsage(chunk);
 
-            if (inputFromChunk.HasValue)
-                totalInputTokens = inputFromChunk.Value;
+                if (inputFromChunk.HasValue)
+                    totalInputTokens = inputFromChunk.Value;
 
-            if (outputFromChunk.HasValue)
-                totalOutputTokens = outputFromChunk.Value;
+                if (outputFromChunk.HasValue)
+                    totalOutputTokens = outputFromChunk.Value;
 
-            yield return chunk;
+                yield return chunk;
+            }
         }
-
-        // Step 5: Record actual usage after stream completes
-        if (totalInputTokens.HasValue && totalOutputTokens.HasValue)
+        finally
         {
-            var actualTotal = totalInputTokens.Value + totalOutputTokens.Value;
-            var reservedTotal = reservation.ReservedTokens;
-            var efficiency = actualTotal > 0 ? (double)actualTotal / reservedTotal * 100.0 : 0;
+            // Step 5: Record actual usage. This runs on every exit path (normal completion,
+            // early consumer termination, cancellation, and mid-stream exceptions) so usage
+            // extracted so far is never silently dropped.
+            if (totalInputTokens.HasValue && totalOutputTokens.HasValue)
+            {
+                var actualTotal = totalInputTokens.Value + totalOutputTokens.Value;
+                var reservedTotal = reservation.ReservedTokens;
+                var efficiency = actualTotal > 0 ? (double)actualTotal / reservedTotal * 100.0 : 0;
 
-            reservation.RecordActualUsage(totalInputTokens.Value, totalOutputTokens.Value);
+                reservation.RecordActualUsage(totalInputTokens.Value, totalOutputTokens.Value);
 
-            log.LogDebug(
-                "Streaming completed for {ModelName}: {ChunkCount} chunks, input={ActualInput}, output={ActualOutput}, total={ActualTotal} " +
-                "(reserved={Reserved}, efficiency={Efficiency:F1}%)",
-                helper.ModelName,
-                chunkCount,
-                totalInputTokens.Value,
-                totalOutputTokens.Value,
-                actualTotal,
-                reservedTotal,
-                efficiency);
-        }
-        else
-        {
-            log.LogWarning(
-                "Could not extract token usage from streaming response for model {ModelName} after {ChunkCount} chunks",
-                helper.ModelName,
-                chunkCount);
+                log.LogDebug(
+                    "Streaming completed for {ModelName}: {ChunkCount} chunks, input={ActualInput}, output={ActualOutput}, total={ActualTotal} " +
+                    "(reserved={Reserved}, efficiency={Efficiency:F1}%)",
+                    helper.ModelName,
+                    chunkCount,
+                    totalInputTokens.Value,
+                    totalOutputTokens.Value,
+                    actualTotal,
+                    reservedTotal,
+                    efficiency);
+            }
+            else
+            {
+                log.LogWarning(
+                    "Could not extract token usage from streaming response for model {ModelName} after {ChunkCount} chunks",
+                    helper.ModelName,
+                    chunkCount);
+            }
         }
     }
 }

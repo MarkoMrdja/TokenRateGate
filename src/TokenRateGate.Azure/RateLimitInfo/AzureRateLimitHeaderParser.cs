@@ -78,7 +78,7 @@ public class AzureRateLimitHeaderParser
     /// </summary>
     private int? ParseIntHeader(IDictionary<string, string> headers, string headerName)
     {
-        if (!headers.TryGetValue(headerName, out var value))
+        if (!TryGetHeader(headers, headerName, out var value))
             return null;
 
         if (int.TryParse(value, out var result))
@@ -97,7 +97,7 @@ public class AzureRateLimitHeaderParser
     /// </summary>
     private DateTimeOffset? ParseUnixTimestampHeader(IDictionary<string, string> headers, string headerName)
     {
-        if (!headers.TryGetValue(headerName, out var value))
+        if (!TryGetHeader(headers, headerName, out var value))
             return null;
 
         if (long.TryParse(value, out var unixSeconds))
@@ -123,5 +123,27 @@ public class AzureRateLimitHeaderParser
             value);
 
         return null;
+    }
+
+    /// <summary>
+    /// Looks up a header by name, falling back to a case-insensitive comparison.
+    /// HTTP header names are case-insensitive per RFC 7230, so headers supplied in
+    /// their natural wire casing must still be found.
+    /// </summary>
+    private static bool TryGetHeader(IDictionary<string, string> headers, string headerName, out string value)
+    {
+        if (headers.TryGetValue(headerName, out value))
+            return true;
+
+        foreach (var header in headers)
+        {
+            if (string.Equals(header.Key, headerName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = header.Value;
+                return true;
+            }
+        }
+
+        return false;
     }
 }
