@@ -459,16 +459,18 @@ public class TokenRateGate : ITokenRateGate, IDisposable
         // Cleanup is fast (O(k) where k = expired items) and lock is already held, so no throttling is needed
 
         var result = _timelineManager.CleanupExpiredEntries();
-        _timelineManager.CleanupStaleReservations(_activeReservations);
+        int staleReservationsRemoved = _timelineManager.CleanupStaleReservations(_activeReservations);
 
-        // Reset insufficient capacity flag if tokens or requests were freed
-        if (result.TokensFreed || result.RequestsFreed)
+        // Reset insufficient capacity flag if tokens or requests were freed,
+        // or if stale reservations were removed (freeing their estimated capacity)
+        if (result.TokensFreed || result.RequestsFreed || staleReservationsRemoved > 0)
         {
             _hasInsufficientCapacity = false;
         }
 
-        // Process waiting queue if either token capacity or request capacity was freed
-        if ((result.TokensFreed || result.RequestsFreed) && _reservationQueue.HasWaitingRequests)
+        // Process waiting queue if either token capacity or request capacity was freed,
+        // or if stale reservations were removed (freeing their estimated capacity)
+        if ((result.TokensFreed || result.RequestsFreed || staleReservationsRemoved > 0) && _reservationQueue.HasWaitingRequests)
             TryProcessingWaitingRequests();
     }
 
@@ -580,6 +582,16 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 _logger.LogDebug("Recorded actual usage for reservation {ReservationId}: {ActualTokens} tokens (reserved: {ReservedTokens})",
                     reservation.Id, actualTokensUsed, reservation.ReservedTokens);
             }
+            else
+            {
+                // The reservation was removed from the active set (e.g. cleaned up as stale)
+                // before the holder released it. The value is still persisted on the
+                // reservation object and will be applied to the timeline in ReleaseReservationAsync.
+                _logger.LogWarning(
+                    "Reservation {ReservationId} not found when recording actual usage ({ActualTokens} tokens); " +
+                    "it may have been removed as stale",
+                    reservation.Id, actualTokensUsed);
+            }
         }
     }
 
@@ -591,7 +603,9 @@ public class TokenRateGate : ITokenRateGate, IDisposable
 
         lock (_lock)
         {
-            if (_activeReservations.Remove(reservation.Id))
+            bool removed = _activeReservations.Remove(reservation.Id);
+
+            if (removed)
             {
                 shouldProcessQueue = _reservationQueue.HasWaitingRequests;
 
@@ -623,6 +637,21 @@ public class TokenRateGate : ITokenRateGate, IDisposable
                 }
 
                 UpdateSafetyTimerState();
+            }
+            else if (reservation.ActualTokensUsed.HasValue)
+            {
+                // The reservation was already removed from the active set (e.g. cleaned up
+                // as stale) before being released. Still record the actual usage so the
+                // real consumption is counted toward the sliding window instead of being
+                // silently dropped.
+                _timelineManager.AddTokenUsage(reservation.ActualTokensUsed.Value, reservation.ReservedTokens);
+
+                _logger.LogWarning(
+                    "Reservation {ReservationId} was already removed when released; recorded actual usage anyway: {Actual} tokens (reserved: {Reserved} tokens)",
+                    reservation.Id, reservation.ActualTokensUsed.Value, reservation.ReservedTokens);
+
+                // Record efficiency metric
+                _metrics?.RecordEfficiency(reservation.ActualTokensUsed.Value, reservation.ReservedTokens);
             }
         }
 
